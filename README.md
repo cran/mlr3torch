@@ -1,9 +1,10 @@
 
 <!-- README.md is generated from README.Rmd. Please edit that file -->
 
-# mlr3torch <img src="man/figures/logo.svg" align="right" width = "120" />
+# mlr3torch <a href="https://mlr3torch.mlr-org.com"><img src="man/figures/logo.svg" align="right" height="139" /></a>
 
-Package website: [dev](https://mlr3torch.mlr-org.com/)
+Package website: [release](https://mlr3torch.mlr-org.com/) \|
+[dev](https://mlr3torch.mlr-org.com/)
 
 Deep Learning with torch and mlr3.
 
@@ -21,9 +22,15 @@ status](https://www.r-pkg.org/badges/version/mlr3torch)](https://CRAN.R-project.
 ## Installation
 
 ``` r
+# Install from CRAN
+install.packages("mlr3torch")
 # Install the development version from GitHub:
 pak::pak("mlr-org/mlr3torch")
-# You also need to install torch:
+```
+
+Afterwards, you also need to run the command below:
+
+``` r
 torch::install_torch()
 ```
 
@@ -154,7 +161,7 @@ layer = list(
 ```
 
 Next, we create a neural network that takes as input a `lazy_tensor`
-(`po("torch_ingress_num")`). It first applies a linear layer and then
+(`po("torch_ingress_ltnsr")`). It first applies a linear layer and then
 repeats the above layer using the special `PipeOpTorchBlock`, followed
 by the network’s head. After that, we configure the loss, optimizer and
 the training parameters. Note that `po("nn_linear_0")` is equivalent to
@@ -221,7 +228,7 @@ deep_learner$train(mnist)
 
 ## Contributing:
 
-- To run the tests one needs to run set the environment variable
+- To run the tests one needs to set the environment variable
   `TEST_TORCH = 1`, e.g. by adding it to `.Renviron`.
 
 ## Acknowledgements

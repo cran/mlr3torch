@@ -1,6 +1,6 @@
 Package: mlr3torch
 Title: Deep Learning with 'mlr3'
-Version: 0.1.0
+Version: 0.1.1
 Authors@R: 
     c(person(given = "Sebastian",
              family = "Fischer",
@@ -32,6 +32,9 @@ Description: Deep Learning library that extends the mlr3 framework by building
   details. Custom architectures can be created using the graph language
   defined in 'mlr3pipelines'.
 License: LGPL (>= 3)
+BugReports: https://github.com/mlr-org/mlr3torch/issues
+URL: https://mlr3torch.mlr-org.com/,
+        https://github.com/mlr-org/mlr3torch/
 Depends: mlr3 (>= 0.20.0), mlr3pipelines (>= 0.6.0), torch (>= 0.13.0),
         R (>= 3.5.0)
 Imports: backports, checkmate (>= 2.2.0), data.table, lgr, methods,
@@ -66,9 +69,9 @@ Collate: 'CallbackSet.R' 'zzz.R' 'TorchCallback.R'
         'TaskClassif_tiny_imagenet.R' 'TorchDescriptor.R'
         'TorchOptimizer.R' 'bibentries.R' 'cache.R' 'lazy_tensor.R'
         'learner_torch_methods.R' 'materialize.R' 'merge_graphs.R'
-        'nn_graph.R' 'paramset_torchlearner.R' 'preprocess.R'
+        'nn.R' 'nn_graph.R' 'paramset_torchlearner.R' 'preprocess.R'
         'rd_info.R' 'with_torch_settings.R'
-Packaged: 2024-07-06 07:40:01 UTC; sebi
+Packaged: 2024-09-10 13:12:36 UTC; sebi
 Author: Sebastian Fischer [cre, aut] (<https://orcid.org/0000-0002-9609-3197>),
   Bernd Bischl [ctb] (<https://orcid.org/0000-0001-6002-6980>),
   Lukas Burk [ctb] (<https://orcid.org/0000-0001-7528-3795>),
@@ -76,4 +79,4 @@ Author: Sebastian Fischer [cre, aut] (<https://orcid.org/0000-0002-9609-3197>),
   Florian Pfisterer [ctb] (<https://orcid.org/0000-0001-8867-762X>)
 Maintainer: Sebastian Fischer <sebf.fischer@gmail.com>
 Repository: CRAN
-Date/Publication: 2024-07-08 05:40:02 UTC
+Date/Publication: 2024-09-12 14:30:02 UTC

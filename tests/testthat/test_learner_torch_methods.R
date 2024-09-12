@@ -31,7 +31,7 @@ test_that("torch_network_predict works", {
     feature_ingress_tokens = ingress1,
     target_batchgetter = crate(function(data, device) {
       torch_tensor(data = as.integer(data[[1]]), dtype = torch_long(), device = device)
-    }),
+    }, .parent = topenv()),
     device = "cpu"
   )
 
@@ -54,7 +54,7 @@ test_that("torch_network_predict works", {
     feature_ingress_tokens = ingress2,
     target_batchgetter = crate(function(data, device) {
       torch_tensor(data = as.integer(data[[1]]), dtype = torch_long(), device = device)
-    }),
+    }, .parent = topenv()),
     device = "cpu"
   )
 
@@ -76,7 +76,8 @@ test_that("torch_network_predict works", {
 
 test_that("Validation Task is respected", {
   task = tsk("iris")
-  task$divide(ids = 1:10)
+  task$internal_valid_task = task$clone(deep = TRUE)$filter(1:10)
+  task$row_roles$use = 1:10
 
   learner = lrn("classif.torch_featureless", epochs = 2, batch_size = 1, measures_train = msrs(c("classif.acc")),
     callbacks = t_clbk("history"), validate = "predefined"
@@ -167,15 +168,4 @@ test_that("learner_torch_dataloader_predict works", {
   dl = get_private(learner)$.dataloader_predict(task, learner$param_set$values)
   expect_false(dl$drop_last)
   expect_class(dl$batch_sampler$sampler, "utils_sampler_sequential")
-})
-
-test_that("wrong column info stops learner from prediction.", {
-  d1 = data.table(x = 1:10, y = 1:10)
-  d2 = data.table(x = runif(10), y = 1:10)
-  t1 = as_task_regr(d1, target = "y")
-  t2 = as_task_regr(d2, target = "y")
-
-  learner = lrn("regr.torch_featureless", epochs = 1, batch_size = 50)
-  learner$train(t1)
-  expect_error(learner$predict(t2), "more gracefully")
 })

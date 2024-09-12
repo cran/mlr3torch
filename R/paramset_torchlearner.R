@@ -26,19 +26,20 @@ make_check_measures = function(task_type) {
       return("Measures must not require a learner or model.")
     }
     return(TRUE)
-  }, task_type)
+  }, task_type, .parent = topenv())
 
 }
 
 check_measures_regr = make_check_measures("regr")
 check_measures_classif = make_check_measures("classif")
 
-epochs_aggr = crate(function(x) as.integer(ceiling(mean(unlist(x)))), .parent = topenv())
-epochs_tune_fn = crate(function(domain, param_vals) {
-  assert_true(param_vals$patience > 0L, .var.name = "patience parameter for LearnerTorch")
-  assert_true(domain$lower <= 1)
+epochs_aggr = function(x) as.integer(ceiling(mean(unlist(x))))
+
+epochs_tune_fn = function(domain, param_vals) {
+  checkmate::assert_true(param_vals$patience > 0L, .var.name = "patience parameter for LearnerTorch")
+  checkmate::assert_true(domain$lower <= 1)
   domain$upper
-}, .parent = topenv())
+}
 
 
 paramset_torchlearner = function(task_type) {
@@ -53,7 +54,7 @@ paramset_torchlearner = function(task_type) {
       aggr = epochs_aggr, in_tune_fn = epochs_tune_fn, disable_in_tune = list(patience = 0)),
     device                = p_fct(tags = c("train", "predict", "required"), levels = mlr_reflections$torch$devices, init = "auto"),
     num_threads           = p_int(lower = 1L, tags = c("train", "predict", "required", "threads"), init = 1L),
-    seed                  = p_int(tags = c("train", "predict", "required"), special_vals = list("random"), init = "random"),
+    seed                  = p_int(tags = c("train", "predict", "required"), special_vals = list("random", NULL), init = "random"),
     # evaluation
     eval_freq             = p_int(lower = 1L, tags = c("train", "required"), init = 1L),
     measures_train        = p_uty(tags = c("train", "required"), custom_check = check_measures, init = list()),

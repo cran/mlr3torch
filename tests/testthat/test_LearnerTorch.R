@@ -252,8 +252,7 @@ test_that("train parameters do what they should: classification and regression",
     )
 
     # first we test everything with validation
-
-    task$divide(ratio = 2 / 3)
+    learner$validate = 0.3
     learner$train(task)
 
     internals = learner$model$callbacks$internals
@@ -287,7 +286,6 @@ test_that("train parameters do what they should: classification and regression",
     expect_permutation(c("epoch", ids(measures_valid)), colnames(learner$model$callbacks$history$valid))
 
     # now without validation
-    task$internal_valid_task = NULL
     learner$validate = NULL
 
     learner$state = NULL
@@ -419,8 +417,7 @@ test_that("resample() works", {
   expect_r6(rr, "ResampleResult")
 })
 
-test_that("callr encapsulation and marshaling", {
-  skip_if_not_installed("callr")
+test_that("marshaling", {
   task = tsk("mtcars")$filter(1:5)
   learner = lrn("regr.mlp", batch_size = 150, epochs = 1, device = "cpu", encapsulate = c(train = "callr"),
     neurons = 20
@@ -429,12 +426,28 @@ test_that("callr encapsulation and marshaling", {
   expect_false(learner$marshaled)
   learner$marshal()$unmarshal()
   expect_prediction(learner$predict(task))
+})
 
+test_that("callr encapsulation and marshaling", {
+  skip_if_not_installed("callr")
+  task = tsk("mtcars")$filter(1:5)
   learner = lrn("regr.mlp", batch_size = 150, epochs = 1, device = "cpu", encapsulate = c(train = "callr"),
     neurons = 20
   )
   learner$train(task)
   expect_prediction(learner$predict(task))
+})
+
+test_that("future and marshaling", {
+  skip_if_not_installed("future")
+  task = tsk("mtcars")$filter(1:5)
+  learner = lrn("regr.mlp", batch_size = 150, epochs = 1, device = "cpu",
+    neurons = 20
+  )
+  rr = with_future(future::multisession, {
+    resample(task, learner, rsmp("holdout"))
+  })
+  expect_class(rr, "ResampleResult")
 })
 
 test_that("Input verification works during `$train()` (train-predict shapes work together)", {
@@ -457,24 +470,6 @@ test_that("Input verification works during `$train()` (train-predict shapes work
   task_unknown = po("trafo_resize", size = c(10, 10), stages = "train") $train(list(nano_dogs_vs_cats()))[[1L]]
   rr2 = resample(task_unknown, learner, rsmp("holdout"))
   expect_true(nrow(rr2$errors) == 0L)
-})
-
-test_that("Input verification works during `$predict()` (same column info, problematic fct -> int conversion)", {
-  task1 = as_task_classif(data.table(
-    y = factor(c("A", "B"))
-  ), target = "y", id = "test1")
-
-  task2 = as_task_classif(data.table(
-    y = factor(c("A", "B"), labels = c("B", "A"), levels = c("B", "A"))
-  ), target = "y", id = "test2")
-
-  learner = lrn("classif.torch_featureless", batch_size = 1L, epochs = 0L)
-
-  learner$train(task1)
-  expect_error(
-    learner$predict(task2),
-    "does not match"
-  )
 })
 
 test_that("col_info is propertly subset when comparing task validity during predict", {
@@ -769,4 +764,12 @@ test_that("error when dataloaders have length 0", {
   learner = lrn("regr.torch_featureless", epochs = 1L, batch_size = 100, drop_last = TRUE)
   task = tsk("mtcars")
   expect_error({learner$train(task)}, "has length 0") # nolint
+})
+
+test_that("can set seed to NULL", {
+  task = tsk("iris")
+  l = lrn("classif.torch_featureless", epochs = 1, batch_size = 150, seed = NULL)
+  l$train(task)
+  l$predict(task)
+  expect_true(is.null(l$model$seed))
 })

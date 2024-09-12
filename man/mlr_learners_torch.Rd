@@ -15,8 +15,7 @@ To specify the validation data, you can set the \verb{$validate} field of the Le
 \item \code{NULL}: no validation
 \item \code{ratio}: only proportion \code{1 - ratio} of the task is used for training and \code{ratio} is used for validation.
 \item \code{"test"} means that the \code{"test"} task of a resampling is used and is not possible when calling \verb{$train()} manually.
-\item \code{"predefined"}: This will use the predefined \verb{$internal_valid_task} of a \code{\link[mlr3:Task]{mlr3::Task}}, which can e.g.
-be created using the \verb{$divide()} method  of \code{Task}.
+\item \code{"predefined"}: This will use the predefined \verb{$internal_valid_task} of a \code{\link[mlr3:Task]{mlr3::Task}}.
 }
 
 This validation data can also be used for early stopping, see the description of the \code{Learner}'s parameters.
@@ -71,13 +70,14 @@ fall back to \code{"cpu"}.
 \item \code{num_threads} :: \code{integer(1)}\cr
 The number of threads for intraop pararallelization (if \code{device} is \code{"cpu"}).
 This value is initialized to 1.
-\item \code{seed} :: \code{integer(1)} or \code{"random"}\cr
-The seed that is used during training and prediction.
+\item \code{seed} :: \code{integer(1)} or \code{"random"} or \code{NULL}\cr
+The torch seed that is used during training and prediction.
 This value is initialized to \code{"random"}, which means that a random seed will be sampled at the beginning of the
 training phase. This seed (either set or randomly sampled) is available via \verb{$model$seed} after training
 and used during prediction.
 Note that by setting the seed during the training phase this will mean that by default (i.e. when \code{seed} is
 \code{"random"}), clones of the learner will use a different seed.
+If set to \code{NULL}, no seeding will be done.
 }
 
 \strong{Evaluation}:

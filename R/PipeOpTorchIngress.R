@@ -40,7 +40,7 @@ PipeOpTorchIngress = R6Class("PipeOpTorchIngress",
         param_vals = param_vals,
         input = data.table(name = "input", train = "Task", predict = "Task"),
         output = data.table(name = "output", train = "ModelDescriptor", predict = "Task"),
-        packages = packages
+        packages = union(packages, "mlr3torch")
       )
      }
   ),
@@ -335,7 +335,8 @@ PipeOpTorchIngressLazyTensor = R6Class("PipeOpTorchIngressLazyTensor",
     initialize = function(id = "torch_ingress_ltnsr", param_vals = list()) {
       param_set = ps(
         shape = p_uty(tags = "train", default = NULL, custom_check = crate(
-          function(x) check_shape(x, null_ok = TRUE, unknown_batch = TRUE), .parent = topenv()))
+          function(x) check_shape(x, null_ok = TRUE, unknown_batch = TRUE),
+            .parent = topenv(), check_shape))
         )
       super$initialize(id = id, param_vals = param_vals, feature_types = "lazy_tensor", param_set = param_set)
     }

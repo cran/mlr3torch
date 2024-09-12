@@ -11,8 +11,7 @@
 #' * `NULL`: no validation
 #' * `ratio`: only proportion `1 - ratio` of the task is used for training and `ratio` is used for validation.
 #' * `"test"` means that the `"test"` task of a resampling is used and is not possible when calling `$train()` manually.
-#' * `"predefined"`: This will use the predefined `$internal_valid_task` of a [`mlr3::Task`], which can e.g.
-#'   be created using the `$divide()` method  of `Task`.
+#' * `"predefined"`: This will use the predefined `$internal_valid_task` of a [`mlr3::Task`].
 #'
 #' This validation data can also be used for early stopping, see the description of the `Learner`'s parameters.
 #'
@@ -433,7 +432,7 @@ LearnerTorch = R6Class("LearnerTorch",
       private$.verify_train_task(task, param_vals)
 
       param_vals$device = auto_device(param_vals$device)
-      if (param_vals$seed == "random") param_vals$seed = sample.int(10000000L, 1L)
+      if (identical(param_vals$seed, "random")) param_vals$seed = sample.int(.Machine$integer.max, 1)
 
       model = with_torch_settings(seed = param_vals$seed, num_threads = param_vals$num_threads, {
         learner_torch_train(self, private, super, task, param_vals)
@@ -453,15 +452,6 @@ LearnerTorch = R6Class("LearnerTorch",
       # Ideally we could rely on state$train_task, but there is this complication
       # https://github.com/mlr-org/mlr3/issues/947
       param_vals$device = auto_device(param_vals$device)
-      if (!test_equal_col_info(ci_train, ci_predict)) { # nolint
-        stopf(paste0(
-          "Predict task's column info does not match the train task's column info.\n",
-          "This migth be handled more gracefully in the future.\n",
-          "Training column info:\n'%s'\n",
-          "Prediction column info:\n'%s'"),
-          paste0(capture.output(ci_train), collapse = "\n"),
-          paste0(capture.output(ci_predict), collapse = "\n"))
-      }
       private$.verify_predict_task(task, param_vals)
 
       with_torch_settings(seed = self$model$seed, num_threads = param_vals$num_threads, {
