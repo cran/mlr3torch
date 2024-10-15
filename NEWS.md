@@ -1,3 +1,7 @@
+# mlr3torch 0.1.2
+
+* Don't use deprecated `data_formats` anymore
+
 # mlr3torch 0.1.1
 
 * fix(preprocessing): regarding the construction of some `PipeOps` such as `po("trafo_resize")`

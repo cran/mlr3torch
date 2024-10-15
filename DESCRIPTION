@@ -1,6 +1,6 @@
 Package: mlr3torch
 Title: Deep Learning with 'mlr3'
-Version: 0.1.1
+Version: 0.1.2
 Authors@R: 
     c(person(given = "Sebastian",
              family = "Fischer",
@@ -71,7 +71,7 @@ Collate: 'CallbackSet.R' 'zzz.R' 'TorchCallback.R'
         'learner_torch_methods.R' 'materialize.R' 'merge_graphs.R'
         'nn.R' 'nn_graph.R' 'paramset_torchlearner.R' 'preprocess.R'
         'rd_info.R' 'with_torch_settings.R'
-Packaged: 2024-09-10 13:12:36 UTC; sebi
+Packaged: 2024-10-15 08:27:30 UTC; sebi
 Author: Sebastian Fischer [cre, aut] (<https://orcid.org/0000-0002-9609-3197>),
   Bernd Bischl [ctb] (<https://orcid.org/0000-0001-6002-6980>),
   Lukas Burk [ctb] (<https://orcid.org/0000-0001-7528-3795>),
@@ -79,4 +79,4 @@ Author: Sebastian Fischer [cre, aut] (<https://orcid.org/0000-0002-9609-3197>),
   Florian Pfisterer [ctb] (<https://orcid.org/0000-0001-8867-762X>)
 Maintainer: Sebastian Fischer <sebf.fischer@gmail.com>
 Repository: CRAN
-Date/Publication: 2024-09-12 14:30:02 UTC
+Date/Publication: 2024-10-15 10:20:03 UTC
