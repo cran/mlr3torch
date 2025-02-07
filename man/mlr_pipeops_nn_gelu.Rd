@@ -7,20 +7,8 @@
 \description{
 Gelu
 }
-\section{Input and Output Channels}{
-
-One input channel called \code{"input"} and one output channel called \code{"output"}.
-For an explanation see \code{\link{PipeOpTorch}}.
-}
-
-\section{State}{
-
-The state is the value calculated by the public method \verb{$shapes_out()}.
-}
-
-\section{Credit}{
-
-Part of this documentation have been copied or adapted from the documentation of \CRANpkg{torch}.
+\section{nn_module}{
+ Calls \code{\link[torch:nn_gelu]{torch::nn_gelu()}} when trained.
 }
 
 \section{Parameters}{
@@ -31,8 +19,15 @@ Whether to use an approximation algorithm. Default is \code{"none"}.
 }
 }
 
-\section{Internals}{
- Calls \code{\link[torch:nn_gelu]{torch::nn_gelu()}} when trained.
+\section{Input and Output Channels}{
+
+One input channel called \code{"input"} and one output channel called \code{"output"}.
+For an explanation see \code{\link{PipeOpTorch}}.
+}
+
+\section{State}{
+
+The state is the value calculated by the public method \verb{$shapes_out()}.
 }
 
 \examples{
@@ -46,6 +41,9 @@ pipeop$param_set
 }
 \seealso{
 Other PipeOps: 
+\code{\link{mlr_pipeops_nn_adaptive_avg_pool1d}},
+\code{\link{mlr_pipeops_nn_adaptive_avg_pool2d}},
+\code{\link{mlr_pipeops_nn_adaptive_avg_pool3d}},
 \code{\link{mlr_pipeops_nn_avg_pool1d}},
 \code{\link{mlr_pipeops_nn_avg_pool2d}},
 \code{\link{mlr_pipeops_nn_avg_pool3d}},

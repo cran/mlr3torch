@@ -8,20 +8,8 @@
 Applies element-wise,
 \eqn{LeakyReLU(x) = max(0, x) + negative_slope * min(0, x)}
 }
-\section{Input and Output Channels}{
-
-One input channel called \code{"input"} and one output channel called \code{"output"}.
-For an explanation see \code{\link{PipeOpTorch}}.
-}
-
-\section{State}{
-
-The state is the value calculated by the public method \verb{$shapes_out()}.
-}
-
-\section{Credit}{
-
-Part of this documentation have been copied or adapted from the documentation of \CRANpkg{torch}.
+\section{nn_module}{
+ Calls \code{\link[torch:nn_leaky_relu]{torch::nn_leaky_relu()}} when trained.
 }
 
 \section{Parameters}{
@@ -34,8 +22,15 @@ Can optionally do the operation in-place. Default: ‘FALSE’.
 }
 }
 
-\section{Internals}{
- Calls \code{\link[torch:nn_hardswish]{torch::nn_hardswish()}} when trained.
+\section{Input and Output Channels}{
+
+One input channel called \code{"input"} and one output channel called \code{"output"}.
+For an explanation see \code{\link{PipeOpTorch}}.
+}
+
+\section{State}{
+
+The state is the value calculated by the public method \verb{$shapes_out()}.
 }
 
 \examples{
@@ -49,6 +44,9 @@ pipeop$param_set
 }
 \seealso{
 Other PipeOps: 
+\code{\link{mlr_pipeops_nn_adaptive_avg_pool1d}},
+\code{\link{mlr_pipeops_nn_adaptive_avg_pool2d}},
+\code{\link{mlr_pipeops_nn_adaptive_avg_pool3d}},
 \code{\link{mlr_pipeops_nn_avg_pool1d}},
 \code{\link{mlr_pipeops_nn_avg_pool2d}},
 \code{\link{mlr_pipeops_nn_avg_pool3d}},

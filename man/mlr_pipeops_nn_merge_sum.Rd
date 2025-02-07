@@ -7,6 +7,16 @@
 \description{
 Calculates the sum of all input tensors.
 }
+\section{nn_module}{
+
+Calls \code{\link[=nn_merge_sum]{nn_merge_sum()}} when trained.
+}
+
+\section{Parameters}{
+
+No parameters.
+}
+
 \section{Input and Output Channels}{
 
 One input channel called \code{"input"} and one output channel called \code{"output"}.
@@ -23,21 +33,6 @@ For an explanation see \code{\link{PipeOpTorch}}.
 The state is the value calculated by the public method \verb{$shapes_out()}.
 }
 
-\section{Credit}{
-
-Part of this documentation have been copied or adapted from the documentation of \CRANpkg{torch}.
-}
-
-\section{Parameters}{
-
-No parameters.
-}
-
-\section{Internals}{
-
-Calls \code{\link[=nn_merge_sum]{nn_merge_sum()}} when trained.
-}
-
 \examples{
 \dontshow{if (torch::torch_is_installed()) (if (getRversion() >= "3.4") withAutoprint else force)(\{ # examplesIf}
 # Construct the PipeOp
@@ -49,6 +44,9 @@ pipeop$param_set
 }
 \seealso{
 Other PipeOps: 
+\code{\link{mlr_pipeops_nn_adaptive_avg_pool1d}},
+\code{\link{mlr_pipeops_nn_adaptive_avg_pool2d}},
+\code{\link{mlr_pipeops_nn_adaptive_avg_pool3d}},
 \code{\link{mlr_pipeops_nn_avg_pool1d}},
 \code{\link{mlr_pipeops_nn_avg_pool2d}},
 \code{\link{mlr_pipeops_nn_avg_pool3d}},
@@ -108,6 +106,9 @@ Other PipeOps:
 \code{\link{mlr_pipeops_torch_model_regr}}
 
 Other PipeOps: 
+\code{\link{mlr_pipeops_nn_adaptive_avg_pool1d}},
+\code{\link{mlr_pipeops_nn_adaptive_avg_pool2d}},
+\code{\link{mlr_pipeops_nn_adaptive_avg_pool3d}},
 \code{\link{mlr_pipeops_nn_avg_pool1d}},
 \code{\link{mlr_pipeops_nn_avg_pool2d}},
 \code{\link{mlr_pipeops_nn_avg_pool3d}},

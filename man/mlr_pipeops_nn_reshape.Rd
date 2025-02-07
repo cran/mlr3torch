@@ -7,20 +7,10 @@
 \description{
 Reshape a tensor to the given shape.
 }
-\section{Input and Output Channels}{
+\section{nn_module}{
 
-One input channel called \code{"input"} and one output channel called \code{"output"}.
-For an explanation see \code{\link{PipeOpTorch}}.
-}
-
-\section{State}{
-
-The state is the value calculated by the public method \verb{$shapes_out()}.
-}
-
-\section{Credit}{
-
-Part of this documentation have been copied or adapted from the documentation of \CRANpkg{torch}.
+Calls \code{\link[=nn_reshape]{nn_reshape()}} when trained.
+This internally calls \code{\link[torch:torch_reshape]{torch::torch_reshape()}} with the given \code{shape}.
 }
 
 \section{Parameters}{
@@ -31,10 +21,15 @@ The desired output shape. Unknown dimension (one at most) can either be specifie
 }
 }
 
-\section{Internals}{
+\section{Input and Output Channels}{
 
-Calls \code{\link[=nn_reshape]{nn_reshape()}} when trained.
-This internally calls \code{\link[torch:torch_reshape]{torch::torch_reshape()}} with the given \code{shape}.
+One input channel called \code{"input"} and one output channel called \code{"output"}.
+For an explanation see \code{\link{PipeOpTorch}}.
+}
+
+\section{State}{
+
+The state is the value calculated by the public method \verb{$shapes_out()}.
 }
 
 \examples{
@@ -48,6 +43,9 @@ pipeop$param_set
 }
 \seealso{
 Other PipeOps: 
+\code{\link{mlr_pipeops_nn_adaptive_avg_pool1d}},
+\code{\link{mlr_pipeops_nn_adaptive_avg_pool2d}},
+\code{\link{mlr_pipeops_nn_adaptive_avg_pool3d}},
 \code{\link{mlr_pipeops_nn_avg_pool1d}},
 \code{\link{mlr_pipeops_nn_avg_pool2d}},
 \code{\link{mlr_pipeops_nn_avg_pool3d}},
