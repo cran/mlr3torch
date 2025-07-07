@@ -45,6 +45,9 @@ PipeOpTorchMerge = R6Class("PipeOpTorchMerge",
   ),
   private = list(
     .innum = NULL,
+    .additional_phash_input = function() {
+      list(private$.innum)
+    },
     .shapes_out = function(shapes_in, param_vals, task) {
       # note that this slightly deviates from the actual broadcasting rules implemented by torch, i.e. we don't fill
       # up missing dimension with 1s because the first dimension is usually the batch dimension.
@@ -139,7 +142,7 @@ PipeOpTorchMergeProd = R6Class("PipeOpTorchMergeProd", inherit = PipeOpTorchMerg
 #' Calls [`nn_merge_cat()`] when trained.
 #' @section Parameters:
 #' * `dim` :: `integer(1)`\cr
-#'   The dimension along which to concatenate the tensors.
+#'   The dimension along which to concatenate the tensors. The default is -1, i.e., the last dimension.
 #' @templateVar id nn_merge_cat
 #' @template pipeop_torch_channels_default
 #' @template pipeop_torch

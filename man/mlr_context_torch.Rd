@@ -74,6 +74,9 @@ that don't evaluate the model.}
 \item{\code{last_loss}}{(\code{numeric(1)})\cr
 The loss from the last trainings batch.}
 
+\item{\code{y_hat}}{(\code{torch_tensor})\cr
+The model's prediction for the current batch.}
+
 \item{\code{epoch}}{(\code{integer(1)})\cr
 The current epoch.}
 
@@ -162,7 +165,8 @@ The loss function.}
 The total number of epochs the learner is trained for.}
 
 \item{\code{prediction_encoder}}{(\verb{function()})\cr
-The learner's prediction encoder.}
+The learner's prediction encoder.
+See section \emph{Inheriting} of \code{\link{LearnerTorch}}.}
 
 \item{\code{eval_freq}}{(\code{integer(1)})\cr
 The evaluation frequency.}

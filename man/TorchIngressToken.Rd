@@ -4,11 +4,11 @@
 \alias{TorchIngressToken}
 \title{Torch Ingress Token}
 \usage{
-TorchIngressToken(features, batchgetter, shape)
+TorchIngressToken(features, batchgetter, shape = NULL)
 }
 \arguments{
-\item{features}{(\code{character})\cr
-Features on which the batchgetter will operate.}
+\item{features}{(\code{character} or \code{mlr3pipelines::Selector})\cr
+Features on which the batchgetter will operate or a selector (such as \code{\link[mlr3pipelines:Selector]{mlr3pipelines::selector_type}}).}
 
 \item{batchgetter}{(\code{function})\cr
 Function with two arguments: \code{data} and \code{device}. This function is given
@@ -16,7 +16,7 @@ the output of \code{Task$data(rows = batch_indices, cols = features)}
 and it should produce a tensor of shape \code{shape_out}.}
 
 \item{shape}{(\code{integer})\cr
-Shape that \code{batchgetter} will produce. Batch-dimension should be included as \code{NA}.}
+Shape that \code{batchgetter} will produce. Batch dimension must be included as \code{NA} (but other dimensions can also be \code{NA}, i.e., unknown).}
 }
 \value{
 \code{TorchIngressToken} object.

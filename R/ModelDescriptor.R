@@ -46,6 +46,7 @@
 #' @export
 ModelDescriptor = function(graph, ingress, task, optimizer = NULL, loss = NULL, callbacks = NULL, pointer = NULL,
   pointer_shape = NULL) {
+  graph = as_graph(graph)
   assert_r6(graph, "Graph")
   innames = graph$input$name  # graph$input$name access is slow
 
@@ -173,6 +174,13 @@ model_descriptor_union = function(md1, md2) {
     task = md1$task
   } else {
     task = PipeOpFeatureUnion$new()$train(list(md1$task, md2$task))[[1]]
+    if (xor(is.null(md1$task$internal_valid_task), is.null(md2$task$internal_valid_task))) {
+      stopf("Something went wrong when merging tasks, as one task has an internal valid task and the other one does not.")
+    }
+    if (!is.null(md1$task$internal_valid_task)) {
+      task$internal_valid_task = PipeOpFeatureUnion$new()$train(list(
+        md1$task$internal_valid_task, md2$task$internal_valid_task))[[1]]
+    }
   }
 
   ModelDescriptor(
