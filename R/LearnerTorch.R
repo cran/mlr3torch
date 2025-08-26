@@ -196,7 +196,8 @@ LearnerTorch = R6Class("LearnerTorch",
         lapply(param_set, function(x) {
           # otherwise cloning can fail when parameter values are set in the param_set constructed
           # from expressions in alist()
-          assert_true(grepl("^(self|private|super)", deparse(x)))
+          assert_true(grepl("^(self|private|super)", deparse(x)),
+            .var.name = "Don't use self, private, or super in param_set")
           check_ps(eval(x))
         })
         private$.param_set_source = param_set
@@ -261,9 +262,11 @@ LearnerTorch = R6Class("LearnerTorch",
     #'   Currently unused.
     print = function(...) {
       super$print(...)
-      catn(str_indent("* Optimizer:", private$.optimizer$id))
-      catn(str_indent("* Loss:", private$.loss$id))
-      catn(str_indent("* Callbacks:", if (length(private$.callbacks)) as_short_string(paste0(ids(private$.callbacks), collapse = ","), 1000L) else "-"))
+      mlr3misc::cat_cli({
+        cli::cli_li("Optimizer: {private$.optimizer$id}")
+        cli::cli_li("Loss: {private$.loss$id}")
+        cli::cli_li(paste0("Callbacks: ", if (length(private$.callbacks)) as_short_string(paste0(ids(private$.callbacks), collapse = ","), 1000L) else "-"))
+      })
     },
     #' @description
     #' Marshal the learner.
@@ -531,6 +534,13 @@ LearnerTorch = R6Class("LearnerTorch",
         "worker_packages"
       )
       args = param_vals[names(param_vals) %in% dl_args]
+      for(param_name in c("sampler", "batch_sampler")){
+        param_val <- args[[param_name]]
+        if (!is.null(param_val)) {
+          # instantiate these params which should be classes.
+          args[[param_name]] = param_val(dataset)
+        }
+      }
       invoke(dataloader, dataset = dataset, .args = args)
     },
     .dataloader_predict = function(dataset, param_vals) {
