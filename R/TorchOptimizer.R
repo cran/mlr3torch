@@ -254,13 +254,13 @@ mlr3torch_optimizers$add("adamw",
       lr           = p_dbl(default = 0.001, lower = 0, upper = Inf, tags = "train"),
       betas        = p_uty(default = c(0.9, 0.999), tags = "train", custom_check = check_betas),
       eps          = p_dbl(default = 1e-08, lower = 1e-16, upper = 1e-4, tags = "train"),
-      weight_decay = p_dbl(default = 0, lower = 0, upper = 1, tags = "train"),
+      weight_decay = p_dbl(default = 0.01, lower = 0, upper = 1, tags = "train"),
       amsgrad      = p_lgl(default = FALSE, tags = "train")
     )
     TorchOptimizer$new(
-      torch_optimizer = torch::optim_ignite_adam,
+      torch_optimizer = torch::optim_ignite_adamw,
       param_set = p,
-      id = "adam",
+      id = "adamw",
       label = "Decoupled Weight Decay Regularization",
       man = "torch::optim_ignite_adamw"
     )

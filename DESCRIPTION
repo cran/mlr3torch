@@ -1,6 +1,6 @@
 Package: mlr3torch
 Title: Deep Learning with 'mlr3'
-Version: 0.3.1
+Version: 0.3.2
 Authors@R: 
     c(person(given = "Sebastian",
              family = "Fischer",
@@ -40,19 +40,19 @@ License: LGPL (>= 3)
 BugReports: https://github.com/mlr-org/mlr3torch/issues
 URL: https://mlr3torch.mlr-org.com/,
         https://github.com/mlr-org/mlr3torch/
-Depends: mlr3 (>= 1.0.1), mlr3pipelines (>= 0.6.0), torch (>= 0.15.0),
+Depends: mlr3 (>= 1.0.1), mlr3pipelines (>= 0.6.0), torch (>= 0.16.2),
         R (>= 3.5.0)
 Imports: backports, cli, checkmate (>= 2.2.0), data.table, lgr,
         methods, mlr3misc (>= 0.14.0), paradox (>= 1.0.0), R6, withr
 Suggests: callr, curl, future, ggplot2, igraph, jsonlite, knitr,
         mlr3tuning (>= 1.0.0), progress, rmarkdown, rpart, viridis,
-        visNetwork, testthat (>= 3.0.0), tfevents, torchvision (>=
-        0.6.0), waldo
+        visNetwork, testthat (>= 3.0.0), tibble, tfevents, torchvision
+        (>= 0.6.0), waldo
 Config/testthat/edition: 3
 NeedsCompilation: no
 ByteCompile: yes
 Encoding: UTF-8
-RoxygenNote: 7.3.2
+RoxygenNote: 7.3.2.9000
 Collate: 'CallbackSet.R' 'aaa.R' 'TorchCallback.R'
         'CallbackSetCheckpoint.R' 'CallbackSetEarlyStopping.R'
         'CallbackSetHistory.R' 'CallbackSetLRScheduler.R'
@@ -84,7 +84,7 @@ Collate: 'CallbackSet.R' 'aaa.R' 'TorchCallback.R'
         'merge_graphs.R' 'multi_tensor_dataset.R' 'nn.R' 'nn_graph.R'
         'paramset_torchlearner.R' 'preprocess.R' 'rd_info.R'
         'with_torch_settings.R' 'zzz.R'
-Packaged: 2025-08-26 14:15:02 UTC; sebi
+Packaged: 2025-10-31 08:39:34 UTC; sebi
 Author: Sebastian Fischer [cre, aut] (ORCID:
     <https://orcid.org/0000-0002-9609-3197>),
   Bernd Bischl [ctb] (ORCID: <https://orcid.org/0000-0001-6002-6980>),
@@ -95,4 +95,4 @@ Author: Sebastian Fischer [cre, aut] (ORCID:
   Carson Zhang [ctb]
 Maintainer: Sebastian Fischer <sebf.fischer@gmail.com>
 Repository: CRAN
-Date/Publication: 2025-08-26 15:00:02 UTC
+Date/Publication: 2025-10-31 09:10:08 UTC
