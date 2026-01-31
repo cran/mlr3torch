@@ -1,6 +1,6 @@
 Package: mlr3torch
 Title: Deep Learning with 'mlr3'
-Version: 0.3.2
+Version: 0.3.3
 Authors@R: 
     c(person(given = "Sebastian",
              family = "Fischer",
@@ -52,7 +52,7 @@ Config/testthat/edition: 3
 NeedsCompilation: no
 ByteCompile: yes
 Encoding: UTF-8
-RoxygenNote: 7.3.2.9000
+RoxygenNote: 7.3.3
 Collate: 'CallbackSet.R' 'aaa.R' 'TorchCallback.R'
         'CallbackSetCheckpoint.R' 'CallbackSetEarlyStopping.R'
         'CallbackSetHistory.R' 'CallbackSetLRScheduler.R'
@@ -84,7 +84,7 @@ Collate: 'CallbackSet.R' 'aaa.R' 'TorchCallback.R'
         'merge_graphs.R' 'multi_tensor_dataset.R' 'nn.R' 'nn_graph.R'
         'paramset_torchlearner.R' 'preprocess.R' 'rd_info.R'
         'with_torch_settings.R' 'zzz.R'
-Packaged: 2025-10-31 08:39:34 UTC; sebi
+Packaged: 2026-01-31 08:09:11 UTC; sebi
 Author: Sebastian Fischer [cre, aut] (ORCID:
     <https://orcid.org/0000-0002-9609-3197>),
   Bernd Bischl [ctb] (ORCID: <https://orcid.org/0000-0001-6002-6980>),
@@ -95,4 +95,4 @@ Author: Sebastian Fischer [cre, aut] (ORCID:
   Carson Zhang [ctb]
 Maintainer: Sebastian Fischer <sebf.fischer@gmail.com>
 Repository: CRAN
-Date/Publication: 2025-10-31 09:10:08 UTC
+Date/Publication: 2026-01-31 09:10:02 UTC

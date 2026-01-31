@@ -51,7 +51,7 @@ expect_pipeop = function(po, check_ps_default_values = TRUE) {
   expect_class(po$param_set, "ParamSet", label = label)
   expect_list(po$param_set$values, names = "unique", label = label)
   expect_flag(po$is_trained, label = label)
-  expect_output(print(po), "PipeOp:", label = label)
+  expect_output(print(po), "PipeOp", label = label)
   expect_character(po$packages, any.missing = FALSE, unique = TRUE, label = label)
   expect_function(po$train, nargs = 1)
   expect_function(po$predict, nargs = 1)
@@ -108,7 +108,7 @@ expect_pipeop_class = function(poclass, constargs = list(), check_ps_default_val
   expect_pipeop(po, check_ps_default_values = check_ps_default_values)
 
   poclone = po$clone(deep = TRUE)
-  expect_deep_clone(po, poclone)
+  expect_deep_clone_mlr3torch(po, poclone)
 
   in_nop = rep(list(NO_OP), po$innum)
   in_nonnop = rep(list(NULL), po$innum)
@@ -126,7 +126,7 @@ expect_pipeop_class = function(poclass, constargs = list(), check_ps_default_val
   # check again with no_op-trained PO
   expect_pipeop(po, check_ps_default_values = check_ps_default_values)
   poclone = po$clone(deep = TRUE)
-  expect_deep_clone(po, poclone)
+  expect_deep_clone_mlr3torch(po, poclone)
 
 }
 
