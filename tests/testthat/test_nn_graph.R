@@ -207,8 +207,8 @@ test_that("cloning", {
   expect_true(identical(network1$graph$pipeops$nn_linear$module, network1$module_list$modules[[2]]))
 
   expect_deep_clone_mlr3torch(network$graph, network1$graph)
-  network$graph = NULL
-  network1$graph = NULL
+  get_private(network)$.graph = NULL
+  get_private(network1)$.graph = NULL
   expect_deep_clone_mlr3torch(network, network1)
 })
 
@@ -251,4 +251,195 @@ test_that("non-terminal output", {
   expect_equal(xout[[1L]]$shape, c(1, 3))
   expect_equal(names(xout), "output_nn_head.output")
   expect_true("output_nn_head.output" %in% module$graph$output$name)
+})
+
+forward_plan = function(network) network$.__enclos_env__$private$.forward_plan
+
+test_that("forward plan gives the same result as Graph$train()", {
+  task = tsk("iris")
+  compare = function(network, input) {
+    expected = network$graph$train(unname(input), single_input = FALSE)[network$output_map]
+    if (!network$list_output) expected = expected[[1L]]
+    expect_equal(invoke(network, .args = input), expected)
+    expect_list(forward_plan(network))
+  }
+
+  # a chain with a block, as created by nn() and model_descriptor_to_module()
+  md = (po("torch_ingress_num") %>>% nn("linear", out_features = 8) %>>%
+    nn("block", nn("linear", out_features = 8) %>>% nn("relu"), n_blocks = 2) %>>% nn("head"))$train(task)[[1L]]
+  network = model_descriptor_to_module(md)
+  compare(network, sample_input_from_shapes(network$shapes_in))
+
+  # two inputs and a module with two outputs
+  po_debug = PipeOpTorchDebug$new(param_vals = list(d_out1 = 1, d_out2 = 2))
+  md2 = (list(po("torch_ingress_num_1"), po("torch_ingress_num_2")) %>>% po_debug)$train(task)[[1L]]
+  network2 = nn_graph(md2$graph, shapes_in = map(md2$ingress, "shape"), list_output = TRUE)
+  compare(network2, sample_input_from_shapes(network2$shapes_in))
+
+  # the output of one module is used by two other modules, which are merged via a vararg channel,
+  # and also returned
+  md3 = (po("torch_ingress_num") %>>% nn("linear", out_features = 3) %>>%
+    gunion(list(nn("relu"), nn("sigmoid"))) %>>% nn("merge_sum"))$train(task)[[1L]]
+  network3 = model_descriptor_to_module(md3, list(md3$pointer, c("linear", "output")), list_output = TRUE)
+  compare(network3, sample_input_from_shapes(network3$shapes_in))
+  expect_equal(names(network3(torch_randn(2, 4))), network3$output_map)
+
+  # the output map can be changed after the plan was created
+  network3$output_map = rev(network3$output_map)
+  compare(network3, sample_input_from_shapes(network3$shapes_in))
+})
+
+test_that("nn_graph falls back to Graph$train() for operators other than PipeOpModule and PipeOpNOP", {
+  graph = po("module", id = "linear", module = nn_linear(2, 3)) %>>% po("copy", outnum = 2)
+  network = nn_graph(graph, shapes_in = set_names(list(c(NA, 2)), graph$input$name), list_output = TRUE)
+  out = network(torch_randn(4, 2))
+  expect_false(forward_plan(network))
+  expect_equal(names(out), c("copy.output1", "copy.output2"))
+  expect_equal(out[[1L]], out[[2L]])
+})
+
+test_that("nn_graph passes the inputs to the correct graph inputs if shapes_in is in a different order", {
+  graph = gunion(list(
+    po("module", id = "a", module = function(x) x * 10),
+    po("module", id = "b", module = function(x) x * 100)
+  )) %>>% po("module", id = "sub", module = function(input1, input2) input1 - input2, inname = c("input1", "input2"))
+  xa = torch_tensor(1)
+  xb = torch_tensor(2)
+  # a.input * 10 - b.input * 100
+  expected = -190
+
+  network = nn_graph(graph, shapes_in = list(b.input = 1, a.input = 1))
+  expect_equal(network(a.input = xa, b.input = xb)$item(), expected)
+  expect_list(forward_plan(network))
+  # unnamed arguments are matched in the order of the graph's inputs
+  expect_equal(network(xa, xb)$item(), expected)
+
+  # the same holds when the graph is run via Graph$train()
+  graph2 = graph$clone(deep = TRUE) %>>% po("copy", outnum = 1)
+  network2 = nn_graph(graph2, shapes_in = list(b.input = 1, a.input = 1))
+  expect_equal(network2(a.input = xa, b.input = xb)$item(), expected)
+  expect_false(forward_plan(network2))
+})
+
+test_that("a learner with an nn_graph whose shapes_in is in a different order predicts correctly, also with jit", {
+  task = as_task_regr(iris[, 1:3], target = "Petal.Length")
+  # a.input * 10 - b.input
+  graph = gunion(list(po("module", id = "a", module = nn_linear(1, 1)), po("module", id = "b", module = nn_identity()))) %>>%
+    po("module", id = "sub", module = function(input1, input2) input1 * 10 - input2, inname = c("input1", "input2"))
+  token = function(feature) TorchIngressToken(feature, batchgetter_num, c(NA, 1))
+  fit = function(jit_trace) {
+    network = nn_graph(graph$clone(deep = TRUE), shapes_in = list(b.input = c(NA, 1), a.input = c(NA, 1)))
+    learner = LearnerTorchModel$new(network = network, task_type = "regr", optimizer = t_opt("adam"), loss = t_loss("mse"),
+      ingress_tokens = list(a.input = token("Sepal.Length"), b.input = token("Sepal.Width")))
+    learner$param_set$set_values(epochs = 0L, batch_size = 150L, jit_trace = jit_trace, seed = 1L)
+    learner$train(task)
+    learner
+  }
+
+  learner = fit(FALSE)
+  linear = learner$network$graph$pipeops$a$module
+  expected = as_array(with_no_grad(linear(torch_tensor(as.matrix(iris$Sepal.Length)))))[, 1L] * 10 - iris$Sepal.Width
+  expect_equal(learner$predict(task)$response, expected, tolerance = 1e-5)
+  # the traced network receives the inputs by position
+  expect_equal(fit(TRUE)$predict(task)$response, expected, tolerance = 1e-5)
+})
+
+test_that("model_descriptor_to_module passes the inputs to the correct graph inputs", {
+  task = tsk("iris")
+  ingress = function(id, feature) {
+    po("select", id = paste0("select_", id), selector = selector_name(feature)) %>>% po("torch_ingress_num", id = id)
+  }
+  graph = gunion(list(ingress("x", "Sepal.Length"), ingress("y", "Sepal.Width"), ingress("z", "Petal.Length")))
+  graph$add_pipeop(po("nn_merge_sum", id = "m1", innum = 2))
+  graph$add_pipeop(po("nn_merge_sum", id = "m2", innum = 2))
+  graph$add_pipeop(po("nn_merge_cat", id = "final", innum = 2))
+  graph$add_edge("x", "m1", dst_channel = "input1")
+  graph$add_edge("y", "m1", dst_channel = "input2")
+  graph$add_edge("x", "m2", dst_channel = "input1")
+  graph$add_edge("z", "m2", dst_channel = "input2")
+  graph$add_edge("m2", "final", dst_channel = "input1")
+  graph$add_edge("m1", "final", dst_channel = "input2")
+
+  md = graph$train(task)[[1L]]
+  # when merging the model descriptors, the ingress of z (via m2) is collected before the ingress of y (via m1),
+  # so the ingress tokens are not in the order of the graph's inputs
+  expect_false(identical(names(md$ingress), md$graph$input$name))
+
+  network = model_descriptor_to_module(md)
+  input = list(x.input = torch_ones(1, 1), y.input = torch_ones(1, 1) * 10, z.input = torch_ones(1, 1) * 100)
+  # cat(x + z, x + y)
+  expect_equal(as_array(invoke(network, .args = input)), matrix(c(101, 11), nrow = 1))
+})
+
+test_that("the graph cannot be replaced, and a nested assignment resets the forward plan", {
+  graph = as_graph(po("module", id = "linear", module = nn_linear(2, 3)))
+  network = nn_graph(graph, shapes_in = set_names(list(c(NA, 2)), graph$input$name))
+  x = torch_randn(4, 2)
+  network(x)
+  expect_list(forward_plan(network))
+  # the parameters of the new graph's modules would not be registered
+  expect_error({
+    network$graph = as_graph(po("module", id = "linear", module = nn_linear(2, 3)))
+  }, "cannot be replaced")
+  expect_list(forward_plan(network))
+  network$graph$pipeops$linear$module = nn_relu()
+  expect_null(forward_plan(network))
+  expect_true(torch_equal(network(x), nnf_relu(x)))
+})
+
+test_that("forward plan uses the modules of a deep clone", {
+  md = (po("torch_ingress_num") %>>% nn("linear", out_features = 3))$train(tsk("iris"))[[1L]]
+  network = model_descriptor_to_module(md)
+  x = torch_randn(2, 4)
+  network(x)
+  network1 = network$clone(deep = TRUE)
+  expect_equal(network(x), network1(x))
+  with_no_grad(network1$graph$pipeops$linear$module$weight$add_(1))
+  expect_false(torch_equal(network(x), network1(x)))
+  expect_true(torch_equal(network1(x), network1$graph$train(list(x), single_input = FALSE)[[1L]]))
+})
+
+test_that("the forward plan is created anew when PipeOps are added to the graph in place", {
+  graph = po("module", id = "linear", module = nn_linear(2, 3)) %>>% po("module", id = "relu", module = nn_relu())
+  network = nn_graph(graph, shapes_in = set_names(list(c(NA, 2)), graph$input$name), output_map = "relu.output")
+  x = torch_randn(4, 2)
+  network(x)
+  network$graph$add_pipeop(po("module", id = "double", module = function(x) x * 2))
+  network$graph$add_edge("relu", "double")
+  network$output_map = "double.output"
+  expect_equal(network(x), network$graph$train(list(x), single_input = FALSE)[["double.output"]])
+  expect_equal(forward_plan(network)$pipeop_ids, names(network$graph$pipeops))
+})
+
+test_that("deep clone uses the cloned modules when they have submodules", {
+  nn_residual = nn_module("nn_residual",
+    initialize = function(d) self$linear = nn_linear(d, d),
+    forward = function(x) x + self$linear(x)
+  )
+  # the module after the one with a submodule has the same shapes as that submodule
+  graph = po("module", id = "residual", module = nn_residual(3)) %>>%
+    po("module", id = "linear", module = nn_linear(3, 3))
+  network = nn_graph(graph, shapes_in = list(residual.input = c(NA, 3)))
+  x = torch_randn(2, 3)
+  y = network(x)
+
+  network1 = network$clone(deep = TRUE)
+  expect_class(network1$graph$pipeops$residual$module, "nn_residual")
+  expect_false(identical(network1$graph$pipeops$linear$module, network1$graph$pipeops$residual$module$linear))
+  expect_true(torch_equal(network1(x), y))
+
+  # the clone runs the modules whose parameters it has, and the original is left alone
+  with_no_grad(walk(network1$parameters, function(p) p$add_(1)))
+  expect_false(torch_equal(network1(x), y))
+  expect_true(torch_equal(network(x), y))
+})
+
+test_that("deep clone of a trained learner whose network has modules with submodules predicts the same", {
+  learner = lrn("classif.tab_resnet", n_blocks = 2, d_block = 5, d_hidden = 10, dropout1 = 0, dropout2 = 0,
+    epochs = 1, batch_size = 50, predict_type = "prob")
+  task = tsk("iris")
+  learner$train(task)
+  learner1 = learner$clone(deep = TRUE)
+  expect_false(identical(learner1$network, learner$network))
+  expect_equal(learner1$predict(task)$prob, learner$predict(task)$prob)
 })

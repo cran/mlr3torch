@@ -16,9 +16,9 @@ The images are have datatype \code{torch_long()}.
 
 CIFAR-10 contains 10 classes. CIFAR-100 contains 100 classes, which may be partitioned into 20 superclasses of 5 classes each.
 The CIFAR-10 and CIFAR-100 classes are mutually exclusive.
-See Chapter 3.1 of \href{https://www.cs.toronto.edu/~kriz/learning-features-2009-TR.pdf}{the technical report} for more details.
+See Chapter 3.1 of \href{https://cave.cs.toronto.edu/kriz/learning-features-2009-TR.pdf}{the technical report} for more details.
 
-The data is obtained from \code{\link[torchvision:cifar_datasets]{torchvision::cifar10_dataset()}} (or \code{torchvision::cifar100_dataset()}).
+The data is obtained from \code{\link[torchvision:cifar10_dataset]{torchvision::cifar10_dataset()}} (or \code{torchvision::cifar100_dataset()}).
 }
 \section{Construction}{
 
@@ -53,7 +53,7 @@ task_cifar10 = tsk("cifar10")
 task_cifar100 = tsk("cifar100")
 }
 \references{
-Krizhevsky, Alex (2009).
+Krizhevsky A (2009).
 \dQuote{Learning Multiple Layers of Features from Tiny Images.}
 \emph{Master's thesis, Department of Computer Science, University of Toronto}.
 }

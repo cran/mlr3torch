@@ -152,7 +152,117 @@ test_that("marshaling", {
   glrn$train(task)
   model = glrn$model
   glrn$marshal()$unmarshal()
-  expect_equal(model, glrn$model)
+  # the unmarshaled network is a deserialized copy, which differs from the original in torch internals
+  # (e.g. the `..refer_to_state_dict..` field), so we compare its state and the rest of the model
+  without_network = function(m) {
+    m$torch_model_regr$model$network = NULL
+    m
+  }
+  expect_equal(without_network(model), without_network(glrn$model))
+  expect_equal(
+    model$torch_model_regr$model$network$state_dict(),
+    glrn$model$torch_model_regr$model$network$state_dict()
+  )
   pred = glrn$predict(task)
   expect_class(pred, "Prediction")
+})
+
+test_that("graph-built learners are reproducible from the seed", {
+  # `PipeOpTorch` operators build their modules while the Graph trains, i.e. before the learner sets
+  # the torch seed, so the weights used to be drawn outside the seeded region. `PipeOpTorchModel`
+  # now makes the learner re-initialize them under the seed.
+  mk = function(seed) as_learner(
+    po("torch_ingress_num") %>>% po("nn_linear", out_features = 4) %>>% po("nn_head") %>>%
+      po("torch_loss", t_loss("cross_entropy")) %>>% po("torch_optimizer", t_opt("adam")) %>>%
+      po("torch_model_classif", batch_size = 50, epochs = 1, seed = seed, predict_type = "prob"))
+  predict_once = function(seed) {
+    l = mk(seed)
+    l$train(tsk("iris"))
+    l$predict(tsk("iris"))$prob
+  }
+
+  a = predict_once(1L)
+  expect_equal(predict_once(1L), a)
+  expect_false(isTRUE(all.equal(predict_once(2L), a)))
+})
+
+test_that("a network passed to LearnerTorchModel directly is not re-initialized", {
+  # only the pipeop path resets, because a hand-built network's weights may be the point
+  task = tsk("mtcars")
+  network = nn_linear(task$n_features, 1)
+  with_no_grad(network$weight$fill_(0.789))
+
+  learner = LearnerTorchModel$new(network = network, task_type = "regr",
+    ingress_tokens = list(input = ingress_num(shape = c(NA, task$n_features))),
+    optimizer = t_opt("adam", lr = 0), loss = t_loss("mse"))
+  learner$param_set$set_values(batch_size = 32, epochs = 1, seed = 1L)
+  learner$train(task)
+
+  expect_equal(unique(as.numeric(learner$model$network$state_dict()[[1L]])), 0.789, tolerance = 1e-6)
+})
+
+test_that("Basic properties: generic torch task", {
+  expect_pipeop_class(PipeOpTorchModel, constargs = list(task_type = "torch"))
+  expect_pipeop(PipeOpTorchModel$new())
+  expect_equal(class(po("torch_model"))[1L], "PipeOpTorchModel")
+})
+
+test_that("Manual test: a generic torch task", {
+  task = tt_task_labels(40L)
+
+  graph = po("torch_ingress_num") %>>%
+    nn("head") %>>%
+    po("torch_loss", tt_loss_bce()) %>>%
+    po("torch_optimizer", "adam")
+  md = graph$train(task)[[1L]]
+  # the head sized itself from the task, through `output_dim_for()`
+  expect_equal(md$pointer_shape, c(NA, 2L))
+
+  # a TaskTorch has no target batchgetter of its own, so the PipeOp is where it is configured
+  obj = po("torch_model", batch_size = 16, epochs = 1, target_batchgetter = tt_bg)
+  expect_equal(obj$id, "torch_model")
+  expect_equal(obj$input$predict, "TaskTorch")
+  expect_equal(obj$output$predict, "PredictionTorch")
+
+  expect_equal(obj$train(list(md)), list(output = NULL))
+  expect_class(obj$state$model$network, c("nn_graph", "nn_module"))
+
+  pred = obj$predict(list(task))[[1L]]
+  expect_class(pred, "PredictionTorch")
+  expect_matrix(pred$response, mode = "logical", nrows = task$nrow, ncols = 2L)
+})
+
+test_that("a graph learner on a generic torch task", {
+  task = tt_task_labels(40L)
+
+  glrn = as_learner(
+    po("torch_ingress_num") %>>%
+      nn("head") %>>%
+      po("torch_loss", tt_loss_bce()) %>>%
+      po("torch_optimizer", "adam") %>>%
+      po("torch_model", batch_size = 16, epochs = 1, target_batchgetter = tt_bg,
+        predict_types = c("response", "prob"))
+  )
+  expect_equal(glrn$task_type, "torch")
+
+  glrn$predict_type = "prob"
+  glrn$train(task)
+  pred = glrn$predict(task)
+  expect_class(pred, "PredictionTorch")
+  expect_set_equal(pred$predict_types, c("response", "prob"))
+  expect_matrix(pred$prob, mode = "numeric", nrows = task$nrow, ncols = 2L)
+
+  # ... and it resamples, which is what needs the predictions of the folds to combine
+  rr = resample(task, glrn, rsmp("cv", folds = 2L))
+  expect_matrix(rr$prediction()$response, mode = "logical", nrows = task$nrow, ncols = 2L)
+})
+
+test_that("a missing target batchgetter is an error, not a wrong tensor", {
+  task = tt_task_labels(20L)
+  graph = po("torch_ingress_num") %>>%
+    nn("head") %>>%
+    po("torch_loss", tt_loss_bce()) %>>%
+    po("torch_optimizer", "adam") %>>%
+    po("torch_model", batch_size = 16, epochs = 1)
+  expect_error(graph$train(task), "does not define how its target becomes a tensor")
 })

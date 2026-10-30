@@ -4,7 +4,12 @@
 \alias{task_dataset}
 \title{Create a Dataset from a Task}
 \usage{
-task_dataset(task, feature_ingress_tokens, target_batchgetter = NULL)
+task_dataset(
+  task,
+  feature_ingress_tokens,
+  target_batchgetter = NULL,
+  cache_data = TRUE
+)
 }
 \arguments{
 \item{task}{(\code{\link[mlr3:Task]{Task}})\cr
@@ -13,16 +18,24 @@ The task for which to build the \link[torch:dataset]{dataset}.}
 \item{feature_ingress_tokens}{(named \code{list()} of \code{\link{TorchIngressToken}})\cr
 Each ingress token defines one item in the \verb{$x} value of a batch with corresponding names.}
 
-\item{target_batchgetter}{(\verb{function(data, device)})\cr
-A function taking in arguments \code{data}, which is a \code{data.table} containing only the target variable, and \code{device}.
-It must return the target as a torch \link[torch:torch_tensor]{tensor} on the selected device.}
+\item{target_batchgetter}{(\verb{function()} or \code{NULL})\cr
+Converts the target columns of a batch into the target tensor \code{y} that the loss is applied to.
+Takes an argument \code{data}, a \code{\link[data.table:data.table]{data.table}} with only the target columns,
+and optionally an argument \code{x}, the named list of feature tensors of the batch, which is what a
+target that is a function of the input needs, see \code{\link[=get_target_batchgetter]{get_target_batchgetter()}}.
+If \code{NULL} (default), the batches have no \code{y} element.}
+
+\item{cache_data}{(\code{logical(1)})\cr
+Whether to retrieve the data from the task once (in \verb{$initialize()}) and to take the batches from it, instead of
+retrieving every batch from the task, which is slow.
+This needs memory for a copy of the task data (lazy tensor columns only contain indices and are small).}
 }
 \value{
 \code{\link[torch:dataset]{torch::dataset}}
 }
 \description{
 Creates a torch \link[torch:dataset]{dataset} from an mlr3 \code{\link[mlr3:Task]{Task}}.
-The resulting dataset's \verb{$.get_batch()} method returns a list with elements \code{x}, \code{y} and \code{index}:
+The resulting dataset's \verb{$.getbatch()} method returns a list with elements \code{x}, \code{y} and \code{.index}:
 \itemize{
 \item \code{x} is a list with tensors, whose content is defined by the parameter \code{feature_ingress_tokens}.
 \item \code{y} is the target variable and its content is defined by the parameter \code{target_batchgetter}.

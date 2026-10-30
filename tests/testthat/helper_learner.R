@@ -99,9 +99,16 @@ classif_mlp2 = function() {
   l
 }
 
-
-regr_mlp2 = function() {
-  l = LearnerTorchMLP$new("regr")
-  l$param_set$set_values(epochs = 1L, batch_size = 100)
-  l
+# The value of a field of the `ContextTorch` once `LearnerTorch$.setup_training()` has run, e.g. the
+# loss that the learner trains with. Trains a clone of the learner for 0 epochs.
+setup_ctx_field = function(learner, task, field) {
+  learner = learner$clone(deep = TRUE)
+  seen = new.env()
+  spy = torch_callback("setup_spy", on_begin = function() {
+    seen$value = self$ctx[[field]]
+  })
+  learner$callbacks = c(learner$callbacks, list(spy))
+  learner$param_set$set_values(epochs = 0L)
+  learner$train(task)
+  seen$value
 }

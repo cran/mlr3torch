@@ -5,11 +5,18 @@
 #' @description
 #' Unfreeze some weights (parameters of the network) after some number of steps or epochs.
 #'
+#' @section Resuming:
+#' Which weights are trainable is stored and restored, so a resumed run does not freeze again what
+#' the run it continues had already unfrozen: `starting_weights` is applied first, and the restored
+#' weights are unfrozen on top of it.
+#'
 #' @param starting_weights (`Select`)\cr
 #'  A `Select` denoting the weights that are trainable from the start.
 #' @param unfreeze (`data.table`)\cr
 #'  A `data.table` with a column `weights` (a list column of `Select`s) and a column `epoch` or `batch`.
 #'  The selector indicates which parameters to unfreeze, while the `epoch` or `batch` column indicates when to do so.
+#'  Its values must be positive integers: epochs and batches are counted from 1 (batches across epochs), and the
+#'  weights are unfrozen at the start of the given epoch or batch, so they are already trained in it.
 #'
 #' @family Callback
 #' @export
@@ -50,6 +57,24 @@ CallbackSetUnfreeze = R6Class("CallbackSetUnfreeze",
 
       frozen_weights_str = paste(trainable_weights, collapse = ", ")
       lg$info(sprintf("Training the following weights at the start: %s", paste0(trainable_weights, collapse = ", ")))
+
+      private$.restore_trainable()
+    },
+    #' @description
+    #' Returns the names of the weights that are currently trainable, so that a later run does not
+    #' freeze weights again that were already unfrozen.
+    state_dict = function() {
+      list(trainable = private$.trainable_weights())
+    },
+    #' @description
+    #' Marks the weights of the state dict as trainable.
+    #' @param state_dict (named `list()`)\cr
+    #'   The state dict as retrieved via `$state_dict()`.
+    load_state_dict = function(state_dict) {
+      # the network is frozen according to `starting_weights` in $on_begin(), so the weights that
+      # were already unfrozen can only be restored afterwards
+      private$.prev_state = state_dict
+      invisible(NULL)
     },
     #' @description
     #' Unfreezes weights if the training is at the correct epoch
@@ -72,7 +97,7 @@ CallbackSetUnfreeze = R6Class("CallbackSetUnfreeze",
     #' Unfreezes weights if the training is at the correct batch
     on_batch_begin = function() {
       if (private$.batchwise) {
-        batch_num = (self$ctx$epoch - 1) * length(self$ctx$loader_train) + self$ctx$step
+        batch_num = self$ctx$global_step
         if (batch_num %in% self$unfreeze$batch) {
           weights = (self$unfreeze[get("batch") == batch_num]$weights)[[1]](names(self$ctx$network$parameters))
           if (!length(weights)) {
@@ -84,6 +109,20 @@ CallbackSetUnfreeze = R6Class("CallbackSetUnfreeze",
           }
         }
       }
+    }
+  ),
+  private = list(
+    .batchwise = NULL,
+    .prev_state = NULL,
+    .trainable_weights = function() {
+      params = self$ctx$network$parameters
+      names(params)[map_lgl(params, function(param) param$requires_grad)]
+    },
+    .restore_trainable = function() {
+      if (is.null(private$.prev_state)) return(NULL)
+      weights = intersect(private$.prev_state$trainable, names(self$ctx$network$parameters))
+      walk(self$ctx$network$parameters[weights], function(param) param$requires_grad_(TRUE))
+      lg$info(sprintf("Restoring the following trainable weights: %s", paste0(weights, collapse = ", ")))
     }
   )
 )
@@ -122,8 +161,8 @@ check_unfreeze_dt = function(x) {
     return("Exactly one of the columns must be named 'epoch' or 'batch'")
   }
   xs = x[["epoch"]] %??% x[["batch"]]
-  if (!test_integerish(xs, lower = 0L) || anyDuplicated(xs)) {
-    return("Column batch/epoch must be a positive integerish vector without duplicates.")
+  if (!test_integerish(xs, lower = 1L) || anyDuplicated(xs)) {
+    return("Column batch/epoch must be a positive integerish vector without duplicates (epochs and batches are counted from 1)")
   }
   if (!test_list(x$weights)) {
     return("The `weights` column should be a list")

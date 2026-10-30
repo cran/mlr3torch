@@ -3,7 +3,7 @@
 #' @description
 #' A data descriptor is a rather internal data structure used in the [`lazy_tensor`] data type.
 #' In essence it is an annotated [`torch::dataset`] and a preprocessing graph (consisting mosty of [`PipeOpModule`]
-#' operators). The additional meta data (e.g. pointer, shapes) allows to preprocess [`lazy_tensor`]s in an
+#' operators). The additional meta data (e.g. pointer, shapes) makes it possible to preprocess [`lazy_tensor`]s in an
 #' [`mlr3pipelines::Graph`] just like any (non-lazy) data types.
 #' The preprocessing is applied when [`materialize()`] is called on the [`lazy_tensor`].
 #'
@@ -131,9 +131,9 @@ DataDescriptor = R6Class("DataDescriptor",
       self$graph_input = graph$input$name
       self$pointer_shape_predict = pointer_shape_predict
 
-      # the pointer is not taken into account, because we save the whole output during caching (for which the
-      # hash is primarily used)
-      self$hash = calculate_hash(self$dataset_hash, self$graph$hash, self$input_map)
+      # the pointer is taken into account, because DataDescriptors that only differ in their pointer describe different
+      # data, e.g. for c() and == on lazy tensors (the cache of materialize() does not use the hash)
+      self$hash = calculate_hash(self$dataset_hash, self$graph$hash, self$input_map, self$pointer)
     },
     #' @description Prints the object
     #' @param ... (any)\cr
@@ -177,8 +177,26 @@ DataDescriptor = R6Class("DataDescriptor",
     #' @field pointer_shape_predict (`integer()` or `NULL`)\cr
     #' Internal use only.
     pointer_shape_predict = NULL
+  ),
+  private = list(
+    # the plan for running the preprocessing graph, see dd_forward_plan()
+    .forward_plan = NULL
   )
 )
+
+# The plan for running the preprocessing graph of a DataDescriptor without `Graph$train()` (see
+# `graph_forward_plan()`). It is created on first use and then reused, as the graph of a DataDescriptor does not
+# change (its hash is also only calculated once); it is created anew if PipeOps were added or removed anyway.
+# FALSE if the graph cannot be run like this.
+dd_forward_plan = function(data_descriptor) {
+  private = get_private(data_descriptor)
+  # DataDescriptors created by an older version of mlr3torch do not have this field
+  if (!exists(".forward_plan", envir = private, inherits = FALSE)) return(FALSE)
+  if (!forward_plan_is_current(private$.forward_plan, data_descriptor$graph)) {
+    private$.forward_plan = graph_forward_plan(data_descriptor$graph) %??% FALSE
+  }
+  private$.forward_plan
+}
 
 #' @title Convert to Data Descriptor
 #' @description

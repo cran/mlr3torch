@@ -11,7 +11,7 @@
 #' * `n_blocks` :: `integer(1)`\cr
 #'   How often to repeat the block.
 #' * `trafo` :: `function(i, param_vals, param_set) -> list()`\cr
-#'   A function that allows to transform the parameters vaues of each layer (`block`).
+#'   A function that transforms the parameter values of each layer (`block`).
 #'   Here,
 #'   * `i` :: `integer(1)`\cr
 #'       is the index of the layer, ranging from `1` to `n_blocks`.
@@ -58,7 +58,8 @@ PipeOpTorchBlock = R6Class("PipeOpTorchBlock",
     #'   A graph consisting primarily of [`PipeOpTorch`] objects that is to be
     #'   repeated.
     initialize = function(block, id = "nn_block", param_vals = list()) {
-      private$.block = as_graph(block)
+      # copied, so that changing the graph that was passed does not change this operator
+      private$.block = as_graph(block, clone = TRUE)
       private$.param_set_base = ps(
         n_blocks = p_int(lower = 0L, tags = c("train", "required")),
         trafo = p_uty(tags = "train", custom_check = crate(function(x) {
@@ -104,9 +105,14 @@ PipeOpTorchBlock = R6Class("PipeOpTorchBlock",
       Reduce(`%>>%`, graphs)
     },
     .shapes_out = function(shapes_in, param_vals, task)  {
-      if (is.null(task)) {
-        stopf("PipeOpTorchBlock '%s', requires a task to compute output shapes", self$id)
+      if (param_vals$n_blocks == 0L) {
+        return(shapes_in)
       }
+      if (is.null(task)) {
+        stopf("PipeOp '%s' requires a task to compute output shapes.", self$id)
+      }
+      # the block is applied to all inputs jointly, so they have to agree on the batch size
+      assert_same_batch_size(shapes_in, self$id)
       block = private$.block$clone(deep = TRUE)
       walk(block$pipeops, function(po) {
         # thereby we avoid initializing the nn modules (it is a little hacky)
@@ -125,7 +131,7 @@ PipeOpTorchBlock = R6Class("PipeOpTorchBlock",
             TorchIngressToken(
               features = "placeholder",
               batchgetter = function(data, ...) NULL,
-              shape = shapes_in[[1]])),
+              shape = shapes_in[[i]])),
               paste0("nop.", i, ".input")
           ),
           task = task,
@@ -141,18 +147,26 @@ PipeOpTorchBlock = R6Class("PipeOpTorchBlock",
     .train = function(inputs) {
       param_vals = self$param_set$get_values()
       if (param_vals$n_blocks == 0L) {
-        return(inputs)
+        # zero blocks pass their inputs on, which is only possible when every output has an input
+        if (length(inputs) != nrow(private$.output_all)) {
+          stopf("PipeOp '%s' cannot have 'n_blocks' = 0, as its block has %i input(s) but %i output(s).",
+            self$id, length(inputs), nrow(private$.output_all))
+        }
+        out = private$.keep_outputs(inputs)
+        # without a state, the PipeOp counts as untrained and the graph cannot predict
+        self$state = map(out, "pointer_shape")
+        return(out)
       }
       block = private$.block$clone(deep = TRUE)
       graph = private$.make_graph(block, param_vals$n_blocks)
       inputs = set_names(inputs, graph$input$name)
-      out = graph$train(inputs, single_input = FALSE)
+      out = private$.keep_outputs(graph$train(inputs, single_input = FALSE))
       self$state = map(out, "pointer_shape")
       return(out)
     },
     .param_set_base = NULL,
     .additional_phash_input = function() {
-      self$block$phash
+      c(super$.additional_phash_input(), self$block$phash)
     }
   )
 )

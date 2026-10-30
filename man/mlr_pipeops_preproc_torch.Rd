@@ -19,13 +19,18 @@ In addition to specifying the construction arguments, you can overwrite the priv
 If you don't overwrite it, the output shapes are assumed to be unknown (\code{NULL}).
 \itemize{
 \item \code{.shapes_out(shapes_in, param_vals, task)}\cr
-(\code{list()}, \verb{list(), }Task\code{or}NULL\verb{) -> }list()\verb{\\cr This private method calculates the output shapes of the lazy tensor columns that are created from applying the preprocessing function with the provided parameter values (}param_vals\verb{). The }task\verb{is very rarely needed, but if it is it should be checked that it is not}NULL`.
+(\code{list()}, \code{list()}, \code{Task} or \code{NULL}) -> \code{list()}\cr
+This private method calculates the output shapes of the lazy tensor columns that are created from applying
+the preprocessing function with the provided parameter values (\code{param_vals}).
+The \code{task} is very rarely needed, but if it is it should be checked that it is not \code{NULL}.
 
 This private method only has the responsibility to calculate the output shapes for one input column, i.e. the
 input \code{shapes_in} can be assumed to have exactly one shape vector for which it must calculate the output shapes
 and return it as a \code{list()} of length 1.
 It can also be assumed that the shape is not \code{NULL} (i.e. unknown).
-Also, the first dimension can be \code{NA}, i.e. is unknown (as for the batch dimension).
+Any dimension of that shape can be \code{NA}, i.e. unknown, not only the first (batch) one, so it
+must handle \code{NA}s and assert those dimensions it actually needs to be known, see
+\code{\link[=assert_known_dims]{assert_known_dims()}} and the "Shape Inference" section of \code{\link{PipeOpTorch}}.
 }
 }
 
@@ -174,39 +179,38 @@ materialize(taskout$data(cols = "x3"), rbind = TRUE)
 \code{\link[mlr3pipelines:PipeOp]{mlr3pipelines::PipeOp}} -> \code{\link[mlr3pipelines:PipeOpTaskPreproc]{mlr3pipelines::PipeOpTaskPreproc}} -> \code{PipeOpTaskPreprocTorch}
 }
 \section{Active bindings}{
-\if{html}{\out{<div class="r6-active-bindings">}}
-\describe{
-\item{\code{fn}}{The preprocessing function.}
+  \if{html}{\out{<div class="r6-active-bindings">}}
+  \describe{
+    \item{\code{fn}}{The preprocessing function.}
 
-\item{\code{rowwise}}{Whether the preprocessing is applied rowwise.}
-}
-\if{html}{\out{</div>}}
+    \item{\code{rowwise}}{Whether the preprocessing is applied rowwise.}
+  }
+  \if{html}{\out{</div>}}
 }
 \section{Methods}{
 \subsection{Public methods}{
-\itemize{
-\item \href{#method-PipeOpTaskPreprocTorch-new}{\code{PipeOpTaskPreprocTorch$new()}}
-\item \href{#method-PipeOpTaskPreprocTorch-shapes_out}{\code{PipeOpTaskPreprocTorch$shapes_out()}}
-\item \href{#method-PipeOpTaskPreprocTorch-clone}{\code{PipeOpTaskPreprocTorch$clone()}}
+  \itemize{
+    \item \href{#method-PipeOpTaskPreprocTorch-initialize}{\code{PipeOpTaskPreprocTorch$new()}}
+    \item \href{#method-PipeOpTaskPreprocTorch-shapes_out}{\code{PipeOpTaskPreprocTorch$shapes_out()}}
+    \item \href{#method-PipeOpTaskPreprocTorch-clone}{\code{PipeOpTaskPreprocTorch$clone()}}
+  }
 }
-}
-\if{html}{\out{
-<details open><summary>Inherited methods</summary>
+\if{html}{\out{<details open><summary>Inherited methods</summary>
 <ul>
-<li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="help"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-help'><code>mlr3pipelines::PipeOp$help()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="predict"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-predict'><code>mlr3pipelines::PipeOp$predict()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="print"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-print'><code>mlr3pipelines::PipeOp$print()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="train"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-train'><code>mlr3pipelines::PipeOp$train()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="help"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-help'><code>mlr3pipelines::PipeOp$help()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="predict"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-predict'><code>mlr3pipelines::PipeOp$predict()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="print"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-print'><code>mlr3pipelines::PipeOp$print()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="train"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-train'><code>mlr3pipelines::PipeOp$train()</code></a></span></li>
 </ul>
-</details>
-}}
+</details>}}
 \if{html}{\out{<hr>}}
-\if{html}{\out{<a id="method-PipeOpTaskPreprocTorch-new"></a>}}
-\if{latex}{\out{\hypertarget{method-PipeOpTaskPreprocTorch-new}{}}}
-\subsection{Method \code{new()}}{
-Creates a new instance of this \code{\link[R6:R6Class]{R6}} class.
-\subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{PipeOpTaskPreprocTorch$new(
+\if{html}{\out{<a id="method-PipeOpTaskPreprocTorch-initialize"></a>}}
+\if{latex}{\out{\hypertarget{method-PipeOpTaskPreprocTorch-initialize}{}}}
+\subsection{\code{PipeOpTaskPreprocTorch$new()}}{
+  Creates a new instance of this \code{\link[R6:R6Class]{R6}} class.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{PipeOpTaskPreprocTorch$new(
   fn,
   id = "preproc_torch",
   param_vals = list(),
@@ -215,92 +219,89 @@ Creates a new instance of this \code{\link[R6:R6Class]{R6}} class.
   rowwise = FALSE,
   stages_init = NULL,
   tags = NULL
-)}\if{html}{\out{</div>}}
-}
-
-\subsection{Arguments}{
-\if{html}{\out{<div class="arguments">}}
-\describe{
-\item{\code{fn}}{(\code{function} or \code{character(2)})\cr
+)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{fn}}{(\code{function} or \code{character(2)})\cr
 The preprocessing function. Must not modify its input in-place.
 If it is a \code{character(2)}, the first element should be the namespace and the second element the name.
 When the preprocessing function is applied to the tensor, the tensor will be passed by position as the first argument.
 If the \code{param_set} is inferred (left as \code{NULL}) it is assumed that the first argument is the \code{torch_tensor}.}
-
-\item{\code{id}}{(\code{character(1)})\cr
+      \item{\code{id}}{(\code{character(1)})\cr
 The id for of the new object.}
-
-\item{\code{param_vals}}{(named \code{list()})\cr
+      \item{\code{param_vals}}{(named \code{list()})\cr
 Parameter values to be set after construction.}
-
-\item{\code{param_set}}{(\code{\link[paradox:ParamSet]{ParamSet}})\cr
-In case the function \code{fn} takes additional parameter besides a \code{\link[torch:torch_tensor]{torch_tensor}} they can be
-specfied as parameters. None of the parameters can have the \code{"predict"} tag.
+      \item{\code{param_set}}{(\code{\link[paradox:ParamSet]{ParamSet}})\cr
+In case the function \code{fn} takes additional parameters besides a \code{\link[torch:torch_tensor]{torch_tensor}} they can be
+specified as parameters. None of the parameters can have the \code{"predict"} tag.
 All tags should include \code{"train"}.}
-
-\item{\code{packages}}{(\code{character()})\cr
+      \item{\code{packages}}{(\code{character()})\cr
 The packages the preprocessing function depends on.}
-
-\item{\code{rowwise}}{(\code{logical(1)})\cr
+      \item{\code{rowwise}}{(\code{logical(1)})\cr
 Whether the preprocessing function is applied rowwise (and then concatenated by row) or directly to the whole
 tensor. In the first case there is no batch dimension.}
-
-\item{\code{stages_init}}{(\code{character(1)})\cr
+      \item{\code{stages_init}}{(\code{character(1)})\cr
 Initial value for the \code{stages} parameter.}
-
-\item{\code{tags}}{(\code{character()})\cr
+      \item{\code{tags}}{(\code{character()})\cr
 Tags for the pipeop.}
+    }
+    \if{html}{\out{</div>}}
+  }
 }
-\if{html}{\out{</div>}}
-}
-}
+
 \if{html}{\out{<hr>}}
 \if{html}{\out{<a id="method-PipeOpTaskPreprocTorch-shapes_out"></a>}}
 \if{latex}{\out{\hypertarget{method-PipeOpTaskPreprocTorch-shapes_out}{}}}
-\subsection{Method \code{shapes_out()}}{
-Calculates the output shapes that would result in applying the preprocessing to one or more
+\subsection{\code{PipeOpTaskPreprocTorch$shapes_out()}}{
+  Calculates the output shapes that would result in applying the preprocessing to one or more
 lazy tensor columns with the provided shape.
 Names are ignored and only order matters.
 It uses the parameter values that are currently set.
-\subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{PipeOpTaskPreprocTorch$shapes_out(shapes_in, stage = NULL, task = NULL)}\if{html}{\out{</div>}}
-}
-
-\subsection{Arguments}{
-\if{html}{\out{<div class="arguments">}}
-\describe{
-\item{\code{shapes_in}}{(\code{list()} of (\code{integer()} or \code{NULL}))\cr
-The input input shapes of the lazy tensors.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{PipeOpTaskPreprocTorch$shapes_out(shapes_in, stage = NULL, task = NULL)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{shapes_in}}{(\code{list()} of (\code{integer()} or \code{NULL}))\cr
+The input shapes of the lazy tensors.
 \code{NULL} indicates that the shape is unknown.
-First dimension must be \code{NA} (if it is not \code{NULL}).}
-
-\item{\code{stage}}{(\code{character(1)})\cr
+If it is not \code{NULL}, the first (batch) dimension must be \code{NA}; any of the other dimensions
+may be \code{NA} as well.}
+      \item{\code{stage}}{(\code{character(1)})\cr
 The stage: either \code{"train"} or \code{"predict"}.}
-
-\item{\code{task}}{(\code{\link[mlr3:Task]{Task}} or \code{NULL})\cr
+      \item{\code{task}}{(\code{\link[mlr3:Task]{Task}} or \code{NULL})\cr
 The task, which is very rarely needed.}
+    }
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Returns}{
+    \code{list()} of (\code{integer()} or \code{NULL})
+  }
 }
-\if{html}{\out{</div>}}
-}
-\subsection{Returns}{
-\code{list()} of (\code{integer()} or \code{NULL})
-}
-}
+
 \if{html}{\out{<hr>}}
 \if{html}{\out{<a id="method-PipeOpTaskPreprocTorch-clone"></a>}}
 \if{latex}{\out{\hypertarget{method-PipeOpTaskPreprocTorch-clone}{}}}
-\subsection{Method \code{clone()}}{
-The objects of this class are cloneable with this method.
-\subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{PipeOpTaskPreprocTorch$clone(deep = FALSE)}\if{html}{\out{</div>}}
+\subsection{\code{PipeOpTaskPreprocTorch$clone()}}{
+  The objects of this class are cloneable with this method.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{PipeOpTaskPreprocTorch$clone(deep = FALSE)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{deep}}{Whether to make a deep clone.}
+    }
+    \if{html}{\out{</div>}}
+  }
 }
 
-\subsection{Arguments}{
-\if{html}{\out{<div class="arguments">}}
-\describe{
-\item{\code{deep}}{Whether to make a deep clone.}
-}
-\if{html}{\out{</div>}}
-}
-}
 }

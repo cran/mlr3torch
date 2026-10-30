@@ -8,7 +8,13 @@
 #' @template learner_example
 #'
 #' @description
-#' Tabular resnet.
+#' A residual network for tabular data, following `r cite_bib("gorishniy2021revisiting")`.
+#'
+#' The features are first projected to dimension `d_block` by a linear layer, followed by `n_blocks`
+#' residual blocks.
+#' Each block computes `x + Dropout(Linear(Dropout(ReLU(Linear(BatchNorm(x))))))`, where the two
+#' dropout ratios are `dropout1` and `dropout2`.
+#' The prediction is `Linear(ReLU(BatchNorm(x)))` of the output `x` of the last block.
 #'
 #' @section Parameters:
 #' Parameters from [`LearnerTorch`], as well as:
@@ -87,9 +93,13 @@ LearnerTorchTabResNet = R6Class("LearnerTorchTabResNet",
       } else {
         po("torch_ingress_num", id = "num")
       }
+      # The blocks normalize their input, but not their output, which is why the prediction head
+      # starts with a normalization and an activation
       graph = ingress %>>%
         po("nn_linear", out_features = param_vals$d_block) %>>%
         po("nn_block", private$.block, n_blocks = param_vals$n_blocks) %>>%
+        po("nn_batch_norm1d") %>>%
+        po("nn_relu") %>>%
         po("nn_head")
 
       md = graph$train(task)[[1L]]
@@ -124,6 +134,8 @@ PipeOpTorchTabResNetBlock = R6Class("PipeOpTorchTabResNetBlock",
       c(param_vals, list(d_block = shapes_in[[1L]][2L]))
     },
     .shapes_out = function(shapes_in, param_vals, task) {
+      # the block dimension is needed to build the module
+      assert_known_dims(shapes_in[[1L]], 2L, "the feature dimension (dimension 2)", self$id)
       shapes_in
     }
   )

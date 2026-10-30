@@ -65,6 +65,7 @@ test_that("order_named_args works", {
   expect_error(order_named_args(function(..., x) NULL, list(2, 3, x = 1)), regexp = "`...` must")
   expect_error(order_named_args(function(y, ..., x) NULL, list(y = 4, 2, 3, x = 1)), regexp = "`...` must")
 })
+
 test_that("shape_to_str works", {
   expect_equal(shape_to_str(c(NA, NA)), "(NA,NA)")
   expect_equal(shape_to_str(1), "(1)")
@@ -78,3 +79,72 @@ test_that("shape_to_str works", {
   md = po("torch_ingress_ltnsr")$train(list(nano_imagenet()))[[1L]]
 })
 
+
+test_that("auto_device() rejects cuda when it is unavailable", {
+  skip_if(cuda_is_available(), "CUDA is available")
+  expect_error(auto_device("cuda"), "no CUDA device is available")
+  expect_error(auto_device("cuda:0"), "no CUDA device is available")
+  expect_equal(auto_device("auto"), "cpu")
+  expect_equal(auto_device("cpu"), "cpu")
+  expect_null(auto_device(NULL))
+})
+
+test_that("rbind_arrays binds along the first dimension", {
+  a = array(1:12, c(2L, 3L, 2L))
+  b = array(13:30, c(3L, 3L, 2L))
+  out = rbind_arrays(list(a, b))
+
+  expect_equal(dim(out), c(5L, 3L, 2L))
+  # every observation keeps the slice it came with, in the order the elements were given
+  expect_equal(out[1:2, , ], a)
+  expect_equal(out[3:5, , ], b)
+
+  # `rbind()` itself only understands two dimensions and would flatten the rest into columns,
+  # which is the whole reason this exists
+  expect_equal(dim(rbind(a, a)), c(2L, 12L))
+})
+
+test_that("rbind_arrays handles the degenerate shapes", {
+  # one element is returned as it is
+  a = array(1:12, c(2L, 3L, 2L))
+  expect_equal(rbind_arrays(list(a)), a)
+
+  # a one-dimensional array has nothing to rotate around
+  expect_equal(rbind_arrays(list(array(1:2), array(3:4))), array(1:4))
+
+  # an element without observations contributes nothing
+  empty = array(integer(0), c(0L, 3L, 2L))
+  expect_equal(rbind_arrays(list(empty, a)), a)
+  expect_equal(dim(rbind_arrays(list(empty, empty))), c(0L, 3L, 2L))
+
+  # matrices work, they are just arrays with two dimensions -- but unlike `rbind()` the dimnames
+  # are dropped, which is why `pt_combine()` still uses `rbind()` for them
+  m = matrix(1:4, nrow = 2L, dimnames = list(NULL, c("a", "b")))
+  expect_equal(rbind_arrays(list(m, m)), matrix(c(1:2, 1:2, 3:4, 3:4), nrow = 4L))
+  expect_null(colnames(rbind_arrays(list(m, m))))
+})
+
+test_that("rbind_arrays rejects arrays that differ beyond the first dimension", {
+  expect_error(
+    rbind_arrays(list(array(1:12, c(2L, 3L, 2L)), array(1:8, c(2L, 2L, 2L)))),
+    "differ beyond the first dimension", fixed = TRUE
+  )
+  # a different number of dimensions is caught by the same check
+  expect_error(
+    rbind_arrays(list(array(1:12, c(2L, 3L, 2L)), matrix(1:6, nrow = 2L))),
+    "differ beyond the first dimension", fixed = TRUE
+  )
+})
+
+test_that("rbind_arrays keeps the storage type of its elements", {
+  expect_type(rbind_arrays(list(array(1L, c(1L, 2L)), array(2L, c(1L, 2L)))), "integer")
+  expect_type(rbind_arrays(list(array(1.5, c(1L, 2L)), array(2.5, c(1L, 2L)))), "double")
+  expect_type(rbind_arrays(list(array(TRUE, c(1L, 2L)), array(FALSE, c(1L, 2L)))), "logical")
+  expect_type(rbind_arrays(list(array("a", c(1L, 2L)), array("b", c(1L, 2L)))), "character")
+})
+
+test_that("auto_device() checks the CUDA device index", {
+  skip_if_not(cuda_is_available(), "CUDA is not available")
+  expect_equal(auto_device("cuda:0"), "cuda:0")
+  expect_error(auto_device(sprintf("cuda:%i", cuda_device_count())), "CUDA device\\(s\\) are available")
+})

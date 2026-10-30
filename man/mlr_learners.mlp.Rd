@@ -10,7 +10,7 @@ The features can either be a single \code{\link{lazy_tensor}} or one or more num
 }
 \section{Dictionary}{
 
-This \link[mlr3:Learner]{Learner} can be instantiated using the sugar function \code{\link[mlr3:mlr_sugar]{lrn()}}:
+This \link[mlr3:Learner]{Learner} can be instantiated using the sugar function \code{\link[mlr3:lrn]{lrn()}}:
 
 \if{html}{\out{<div class="sourceCode">}}\preformatted{lrn("classif.mlp", ...)
 lrn("regr.mlp", ...)
@@ -35,7 +35,7 @@ lrn("regr.mlp", ...)
 
 Parameters from \code{\link{LearnerTorch}}, as well as:
 \itemize{
-\item \code{activation} :: \verb{[nn_module]}\cr
+\item \code{activation} :: \code{\link[torch:nn_module]{nn_module}}\cr
 The activation function. Is initialized to \code{\link[torch:nn_relu]{nn_relu}}.
 \item \code{activation_args} :: named \code{list()}\cr
 A named list with initialization arguments for the activation function.
@@ -46,7 +46,7 @@ Setting this to \code{c(10, 20)} would have a the first hidden layer with 10 neu
 \item \code{n_layers} :: \code{integer()}\cr
 The number of layers. This parameter must only be set when \code{neurons} has length 1.
 \item \code{p} :: \code{numeric(1)}\cr
-The dropout probability. Is initialized to \code{0.5}.
+The dropout probability. Is initialized to \code{0.1}.
 \item \code{shape} :: \code{integer()} or \code{NULL}\cr
 The input shape of length 2, e.g. \code{c(NA, 5)}.
 Only needs to be present when there is a lazy tensor input with unknown shape (\code{NULL}).
@@ -81,14 +81,18 @@ predictions$score()
 }
 \references{
 Gorishniy Y, Rubachev I, Khrulkov V, Babenko A (2021).
-\dQuote{Revisiting Deep Learning  for Tabular Data.}
+\dQuote{Revisiting Deep Learning for Tabular Data.}
 \emph{arXiv}, \bold{2106.11959}.
 }
 \seealso{
-Other Learner: 
+Other Learner:
+\code{\link{GraphLearnerTorch}},
+\code{\link[=as_learner_torch]{as_learner_torch()}},
 \code{\link{mlr_learners.ft_transformer}},
 \code{\link{mlr_learners.module}},
+\code{\link{mlr_learners.realmlp}},
 \code{\link{mlr_learners.tab_resnet}},
+\code{\link{mlr_learners.tabm}},
 \code{\link{mlr_learners.torch_featureless}},
 \code{\link{mlr_learners_torch}},
 \code{\link{mlr_learners_torch_image}},
@@ -96,84 +100,83 @@ Other Learner:
 }
 \concept{Learner}
 \section{Super classes}{
-\code{\link[mlr3:Learner]{mlr3::Learner}} -> \code{\link[mlr3torch:LearnerTorch]{mlr3torch::LearnerTorch}} -> \code{LearnerTorchMLP}
+\code{\link[mlr3:Learner]{mlr3::Learner}} -> \code{\link[mlr3torch:LearnerTorch]{LearnerTorch}} -> \code{LearnerTorchMLP}
 }
 \section{Methods}{
 \subsection{Public methods}{
-\itemize{
-\item \href{#method-LearnerTorchMLP-new}{\code{LearnerTorchMLP$new()}}
-\item \href{#method-LearnerTorchMLP-clone}{\code{LearnerTorchMLP$clone()}}
+  \itemize{
+    \item \href{#method-LearnerTorchMLP-initialize}{\code{LearnerTorchMLP$new()}}
+    \item \href{#method-LearnerTorchMLP-clone}{\code{LearnerTorchMLP$clone()}}
+  }
 }
-}
-\if{html}{\out{
-<details><summary>Inherited methods</summary>
+\if{html}{\out{<details><summary>Inherited methods</summary>
 <ul>
-<li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="base_learner"><a href='../../mlr3/html/Learner.html#method-Learner-base_learner'><code>mlr3::Learner$base_learner()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="configure"><a href='../../mlr3/html/Learner.html#method-Learner-configure'><code>mlr3::Learner$configure()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="encapsulate"><a href='../../mlr3/html/Learner.html#method-Learner-encapsulate'><code>mlr3::Learner$encapsulate()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="help"><a href='../../mlr3/html/Learner.html#method-Learner-help'><code>mlr3::Learner$help()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="predict"><a href='../../mlr3/html/Learner.html#method-Learner-predict'><code>mlr3::Learner$predict()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="predict_newdata"><a href='../../mlr3/html/Learner.html#method-Learner-predict_newdata'><code>mlr3::Learner$predict_newdata()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="reset"><a href='../../mlr3/html/Learner.html#method-Learner-reset'><code>mlr3::Learner$reset()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="selected_features"><a href='../../mlr3/html/Learner.html#method-Learner-selected_features'><code>mlr3::Learner$selected_features()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="train"><a href='../../mlr3/html/Learner.html#method-Learner-train'><code>mlr3::Learner$train()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3torch" data-topic="LearnerTorch" data-id="dataset"><a href='../../mlr3torch/html/LearnerTorch.html#method-LearnerTorch-dataset'><code>mlr3torch::LearnerTorch$dataset()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3torch" data-topic="LearnerTorch" data-id="format"><a href='../../mlr3torch/html/LearnerTorch.html#method-LearnerTorch-format'><code>mlr3torch::LearnerTorch$format()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3torch" data-topic="LearnerTorch" data-id="marshal"><a href='../../mlr3torch/html/LearnerTorch.html#method-LearnerTorch-marshal'><code>mlr3torch::LearnerTorch$marshal()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3torch" data-topic="LearnerTorch" data-id="print"><a href='../../mlr3torch/html/LearnerTorch.html#method-LearnerTorch-print'><code>mlr3torch::LearnerTorch$print()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3torch" data-topic="LearnerTorch" data-id="unmarshal"><a href='../../mlr3torch/html/LearnerTorch.html#method-LearnerTorch-unmarshal'><code>mlr3torch::LearnerTorch$unmarshal()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="base_learner"><a href='../../mlr3/html/Learner.html#method-Learner-base_learner'><code>mlr3::Learner$base_learner()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="configure"><a href='../../mlr3/html/Learner.html#method-Learner-configure'><code>mlr3::Learner$configure()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="encapsulate"><a href='../../mlr3/html/Learner.html#method-Learner-encapsulate'><code>mlr3::Learner$encapsulate()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="help"><a href='../../mlr3/html/Learner.html#method-Learner-help'><code>mlr3::Learner$help()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="predict"><a href='../../mlr3/html/Learner.html#method-Learner-predict'><code>mlr3::Learner$predict()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="predict_newdata"><a href='../../mlr3/html/Learner.html#method-Learner-predict_newdata'><code>mlr3::Learner$predict_newdata()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="reset"><a href='../../mlr3/html/Learner.html#method-Learner-reset'><code>mlr3::Learner$reset()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="selected_features"><a href='../../mlr3/html/Learner.html#method-Learner-selected_features'><code>mlr3::Learner$selected_features()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="train"><a href='../../mlr3/html/Learner.html#method-Learner-train'><code>mlr3::Learner$train()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3torch" data-topic="LearnerTorch" data-id="dataset"><a href='../../mlr3torch/html/LearnerTorch.html#method-LearnerTorch-dataset'><code>LearnerTorch$dataset()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3torch" data-topic="LearnerTorch" data-id="format"><a href='../../mlr3torch/html/LearnerTorch.html#method-LearnerTorch-format'><code>LearnerTorch$format()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3torch" data-topic="LearnerTorch" data-id="marshal"><a href='../../mlr3torch/html/LearnerTorch.html#method-LearnerTorch-marshal'><code>LearnerTorch$marshal()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3torch" data-topic="LearnerTorch" data-id="print"><a href='../../mlr3torch/html/LearnerTorch.html#method-LearnerTorch-print'><code>LearnerTorch$print()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3torch" data-topic="LearnerTorch" data-id="unmarshal"><a href='../../mlr3torch/html/LearnerTorch.html#method-LearnerTorch-unmarshal'><code>LearnerTorch$unmarshal()</code></a></span></li>
 </ul>
-</details>
-}}
+</details>}}
 \if{html}{\out{<hr>}}
-\if{html}{\out{<a id="method-LearnerTorchMLP-new"></a>}}
-\if{latex}{\out{\hypertarget{method-LearnerTorchMLP-new}{}}}
-\subsection{Method \code{new()}}{
-Creates a new instance of this \link[R6:R6Class]{R6} class.
-\subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{LearnerTorchMLP$new(
+\if{html}{\out{<a id="method-LearnerTorchMLP-initialize"></a>}}
+\if{latex}{\out{\hypertarget{method-LearnerTorchMLP-initialize}{}}}
+\subsection{\code{LearnerTorchMLP$new()}}{
+  Creates a new instance of this \link[R6:R6Class]{R6} class.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{LearnerTorchMLP$new(
   task_type,
   optimizer = NULL,
   loss = NULL,
   callbacks = list()
-)}\if{html}{\out{</div>}}
-}
-
-\subsection{Arguments}{
-\if{html}{\out{<div class="arguments">}}
-\describe{
-\item{\code{task_type}}{(\code{character(1)})\cr
+)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{task_type}}{(\code{character(1)})\cr
 The task type, either \verb{"classif}" or \code{"regr"}.}
-
-\item{\code{optimizer}}{(\code{\link{TorchOptimizer}})\cr
+      \item{\code{optimizer}}{(\code{\link{TorchOptimizer}})\cr
 The optimizer to use for training.
 Per default, \emph{adam} is used.}
-
-\item{\code{loss}}{(\code{\link{TorchLoss}})\cr
+      \item{\code{loss}}{(\code{\link{TorchLoss}})\cr
 The loss used to train the network.
 Per default, \emph{mse} is used for regression and \emph{cross_entropy} for classification.}
-
-\item{\code{callbacks}}{(\code{list()} of \code{\link{TorchCallback}}s)\cr
+      \item{\code{callbacks}}{(\code{list()} of \code{\link{TorchCallback}}s)\cr
 The callbacks. Must have unique ids.}
+    }
+    \if{html}{\out{</div>}}
+  }
 }
-\if{html}{\out{</div>}}
-}
-}
+
 \if{html}{\out{<hr>}}
 \if{html}{\out{<a id="method-LearnerTorchMLP-clone"></a>}}
 \if{latex}{\out{\hypertarget{method-LearnerTorchMLP-clone}{}}}
-\subsection{Method \code{clone()}}{
-The objects of this class are cloneable with this method.
-\subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{LearnerTorchMLP$clone(deep = FALSE)}\if{html}{\out{</div>}}
+\subsection{\code{LearnerTorchMLP$clone()}}{
+  The objects of this class are cloneable with this method.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{LearnerTorchMLP$clone(deep = FALSE)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{deep}}{Whether to make a deep clone.}
+    }
+    \if{html}{\out{</div>}}
+  }
 }
 
-\subsection{Arguments}{
-\if{html}{\out{<div class="arguments">}}
-\describe{
-\item{\code{deep}}{Whether to make a deep clone.}
-}
-\if{html}{\out{</div>}}
-}
-}
 }

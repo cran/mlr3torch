@@ -8,15 +8,15 @@
 #' They can be used to gain more control over the training process of a neural network without
 #' having to write everything from scratch.
 #'
-#' When used a in torch learner, the `CallbackSet` is wrapped in a [`TorchCallback`].
-#' The latters parameter set represents the arguments of the [`CallbackSet`]'s `$initialize()` method.
+#' When used in a torch learner, the `CallbackSet` is wrapped in a [`TorchCallback`].
+#' The latter's parameter set represents the arguments of the [`CallbackSet`]'s `$initialize()` method.
 #'
 #' @section Inheriting:
 #' For each available stage (see section *Stages*) a public method `$on_<stage>()` can be defined.
 #' The evaluation context (a [`ContextTorch`]) can be accessed via `self$ctx`, which contains
 #' the current state of the training loop.
 #' This context is assigned at the beginning of the training loop and removed afterwards.
-#' Different stages of a callback can communicate with each other by assigning values to `$self`.
+#' Different stages of a callback can communicate with each other by assigning values to `self`.
 #'
 #' *State*:
 #' To be able to store information in the `$model` slot of a [`LearnerTorch`], callbacks support a state API.
@@ -26,24 +26,38 @@
 #' callback state into a different callback.
 #' Note that the `$state_dict()` should not include the parameter values that were used to initialize the callback.
 #'
+#' In order to be able to resume a callback, it needs to work with `saveRDS`, so it cannot contain
+#' external pointers such as [`torch_tensor`][torch::torch_tensor]s.
+#' Convert them to R data, e.g. via `as.array()`.
+#'
 #' For creating custom callbacks, the function [`torch_callback()`] is recommended, which creates a
 #' `CallbackSet` and then wraps it in a [`TorchCallback`].
 #' To create a `CallbackSet` the convenience function [`callback_set()`] can be used.
 #' These functions perform checks such as that the stages are not accidentally misspelled.
 #'
-#'
 #' @section Stages:
 #' * `begin` :: Run before the training loop begins.
-#' * `epoch_begin` :: Run he beginning of each epoch.
+#' * `epoch_begin` :: Run at the beginning of each epoch.
 #' * `batch_begin` :: Run before the forward call.
 #' * `after_backward` :: Run after the backward call.
 #' * `batch_end` :: Run after the optimizer step.
+#' * `before_valid` :: Run before the validation loop begins.
 #' * `batch_valid_begin` :: Run before the forward call in the validation loop.
 #' * `batch_valid_end` :: Run after the forward call in the validation loop.
 #' * `valid_end` :: Run at the end of validation.
 #' * `epoch_end` :: Run at the end of each epoch.
 #' * `end` :: Run after last epoch.
-#' * `exit` :: Run at last, using `on.exit()`.
+#' * `exit` :: Run last, using `on.exit()`.
+#'
+#' @section Ordering:
+#' Within a stage, callbacks are called in the order in which they were passed to the learner.
+#' A callback can override this via its `$weight` field: callbacks with a higher weight are called
+#' after those with a lower one, and callbacks with the same weight keep the order in which they
+#' were passed.
+#' The default weight is `0`.
+#' This matters for callbacks that observe what the others did, which is why
+#' [`CallbackSetCheckpoint`] has weight `Inf`: it always runs last and therefore saves the network
+#' and optimizer as the other callbacks left them at the end of the stage.
 #'
 #' @section Terminate Training:
 #' If training is to be stopped, it is possible to set the field `$terminate` of [`ContextTorch`].
@@ -59,6 +73,9 @@ CallbackSet = R6Class("CallbackSet",
     #'   The evaluation context for the callback.
     #'   This field should always be `NULL` except during the `$train()` call of the torch learner.
     ctx = NULL,
+    #' @field weight (`numeric(1)`)\cr
+    #'   Controls when this callback is called within a stage, see section *Ordering*.
+    weight = 0,
     #' @description
     #' Prints the object.
     #' @param ... (any)\cr
@@ -68,7 +85,7 @@ CallbackSet = R6Class("CallbackSet",
       catn(str_indent("* Stages:", self$stages))
     },
     #' @description
-    #' Returns information that is kept in the the [`LearnerTorch`]'s state after training.
+    #' Returns information that is kept in the [`LearnerTorch`]'s state after training.
     #' This information should be loadable into the callback using `$load_state_dict()` to be able to continue training.
     #' This returns `NULL` by default.
     state_dict = function() {
@@ -76,12 +93,16 @@ CallbackSet = R6Class("CallbackSet",
     },
     #' @description
     #' Loads the state dict into the callback to continue training.
+    #' A callback that keeps no state inherits this, which has nothing to load and therefore only
+    #' warns when it is handed a state anyway -- a callback that implements `$state_dict()` but not
+    #' this method, so that a resuming run cannot give its state back.
     #' @param state_dict (any)\cr
     #'   The state dict as retrieved via `$state_dict()`.
     load_state_dict = function(state_dict) {
-      assert_true(is.null(state_dict),
-        .var.name = "state_dict method not implemented and state_dict must hence not be provided")
-      NULL
+      if (!is.null(state_dict)) {
+        warningf("Callback of class <%s> does not implement $load_state_dict(), its state is ignored.", class(self)[[1L]])
+      }
+      invisible(NULL)
     }
   ),
   active = list(
@@ -142,6 +163,11 @@ CallbackSet = R6Class("CallbackSet",
 #'   This is what will be available in the learner after training.
 #' @param load_state_dict (`function(state_dict)`)\cr
 #'   Function that loads a callback state.
+#' @param weight (`numeric(1)`)\cr
+#'   Controls when the callback is called within a stage, see section *Ordering* of [`CallbackSet`].
+#'   Defaults to `0`.
+#'   The name is reserved for this, so `initialize` must not take a `weight` argument: wrapping such
+#'   a callback in a [`TorchCallback`] is an error.
 #' @param lock_objects (`logical(1)`)\cr
 #'  Whether to lock the objects of the resulting [`R6Class`][R6::R6Class].
 #'  If `FALSE` (default), values can be freely assigned to `self` without declaring them in the
@@ -171,6 +197,7 @@ callback_set = function(
   state_dict = NULL,
   load_state_dict = NULL,
   initialize = NULL,
+  weight = NULL,
   public = NULL, private = NULL, active = NULL, parent_env = parent.frame(), inherit = CallbackSet,
   lock_objects = FALSE
   ) {
@@ -191,7 +218,9 @@ callback_set = function(
     on_batch_valid_begin = assert_function(on_batch_valid_begin, nargs = 0, null.ok = TRUE),
     on_batch_valid_end = assert_function(on_batch_valid_end, nargs = 0, null.ok = TRUE),
     on_valid_end = assert_function(on_valid_end, nargs = 0, null.ok = TRUE),
-    on_exit = assert_function(on_exit, nargs = 0, null.ok = TRUE)
+    on_exit = assert_function(on_exit, nargs = 0, null.ok = TRUE),
+    # NULL is filtered out below, so that inheriting from another callback keeps its weight
+    weight = if (!is.null(weight)) assert_number(weight)
   )
 
   assert_function(initialize, null.ok = TRUE)

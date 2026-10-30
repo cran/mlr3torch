@@ -26,6 +26,7 @@ torch_callback(
   state_dict = NULL,
   load_state_dict = NULL,
   initialize = NULL,
+  weight = NULL,
   public = NULL,
   private = NULL,
   active = NULL,
@@ -68,6 +69,12 @@ Function that loads a callback state.}
 \item{initialize}{(\verb{function()})\cr
 The initialization method of the callback.}
 
+\item{weight}{(\code{numeric(1)})\cr
+Controls when the callback is called within a stage, see section \emph{Ordering} of \code{\link{CallbackSet}}.
+Defaults to \code{0}.
+The name is reserved for this, so \code{initialize} must not take a \code{weight} argument: wrapping such
+a callback in a \code{\link{TorchCallback}} is an error.}
+
 \item{public, private, active}{(\code{list()})\cr
 Additional public, private, and active fields to add to the callback.}
 
@@ -101,17 +108,30 @@ then wraps this generator in a \code{\link{TorchCallback}} that can be passed to
 
 \itemize{
 \item \code{begin} :: Run before the training loop begins.
-\item \code{epoch_begin} :: Run he beginning of each epoch.
+\item \code{epoch_begin} :: Run at the beginning of each epoch.
 \item \code{batch_begin} :: Run before the forward call.
 \item \code{after_backward} :: Run after the backward call.
 \item \code{batch_end} :: Run after the optimizer step.
+\item \code{before_valid} :: Run before the validation loop begins.
 \item \code{batch_valid_begin} :: Run before the forward call in the validation loop.
 \item \code{batch_valid_end} :: Run after the forward call in the validation loop.
 \item \code{valid_end} :: Run at the end of validation.
 \item \code{epoch_end} :: Run at the end of each epoch.
 \item \code{end} :: Run after last epoch.
-\item \code{exit} :: Run at last, using \code{on.exit()}.
+\item \code{exit} :: Run last, using \code{on.exit()}.
 }
+}
+
+\section{Ordering}{
+
+Within a stage, callbacks are called in the order in which they were passed to the learner.
+A callback can override this via its \verb{$weight} field: callbacks with a higher weight are called
+after those with a lower one, and callbacks with the same weight keep the order in which they
+were passed.
+The default weight is \code{0}.
+This matters for callbacks that observe what the others did, which is why
+\code{\link{CallbackSetCheckpoint}} has weight \code{Inf}: it always runs last and therefore saves the network
+and optimizer as the other callbacks left them at the end of the stage.
 }
 
 \examples{
@@ -140,11 +160,11 @@ learner$train(task)
 \dontshow{\}) # examplesIf}
 }
 \seealso{
-Other Callback: 
+Other Callback:
 \code{\link{TorchCallback}},
-\code{\link{as_torch_callback}()},
-\code{\link{as_torch_callbacks}()},
-\code{\link{callback_set}()},
+\code{\link[=as_torch_callback]{as_torch_callback()}},
+\code{\link[=as_torch_callbacks]{as_torch_callbacks()}},
+\code{\link[=callback_set]{callback_set()}},
 \code{\link{mlr3torch_callbacks}},
 \code{\link{mlr_callback_set}},
 \code{\link{mlr_callback_set.checkpoint}},
@@ -152,6 +172,6 @@ Other Callback:
 \code{\link{mlr_callback_set.tb}},
 \code{\link{mlr_callback_set.unfreeze}},
 \code{\link{mlr_context_torch}},
-\code{\link{t_clbk}()}
+\code{\link[=t_clbk]{t_clbk()}}
 }
 \concept{Callback}

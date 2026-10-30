@@ -18,86 +18,135 @@ As of this writing, the following are available:
 \item Custom schedulers defined with \code{\link[torch:lr_scheduler]{torch::lr_scheduler()}}.
 }
 }
+\section{Resuming}{
+
+The state of the wrapped \code{torch} scheduler is stored and restored, so a resumed run continues the
+schedule instead of starting it over.
+Creating a scheduler resets the optimizer's learning rate to the one the schedule started at, so
+the rate the restored schedule had reached is put back afterwards.
+
+That state contains the scheduler's configuration as well as its progress, and restoring it
+overwrites what the resuming run was configured with.
+Resuming with different scheduler arguments, or a different \code{opt.lr}, which the schedule's base
+rates are derived from, therefore silently continues the schedule of the checkpointed run.
+}
+
 \section{Super class}{
-\code{\link[mlr3torch:CallbackSet]{mlr3torch::CallbackSet}} -> \code{CallbackSetLRScheduler}
+\code{\link[mlr3torch:CallbackSet]{CallbackSet}} -> \code{CallbackSetLRScheduler}
 }
 \section{Public fields}{
-\if{html}{\out{<div class="r6-fields">}}
-\describe{
-\item{\code{scheduler_fn}}{(\code{lr_scheduler_generator})\cr
+  \if{html}{\out{<div class="r6-fields">}}
+  \describe{
+    \item{\code{scheduler_fn}}{(\code{lr_scheduler_generator})\cr
 The \code{torch} function that creates a learning rate scheduler}
 
-\item{\code{scheduler}}{(\code{LRScheduler})\cr
+    \item{\code{scheduler}}{(\code{LRScheduler})\cr
 The learning rate scheduler wrapped by this callback}
-}
-\if{html}{\out{</div>}}
+  }
+  \if{html}{\out{</div>}}
 }
 \section{Methods}{
 \subsection{Public methods}{
-\itemize{
-\item \href{#method-CallbackSetLRScheduler-new}{\code{CallbackSetLRScheduler$new()}}
-\item \href{#method-CallbackSetLRScheduler-on_begin}{\code{CallbackSetLRScheduler$on_begin()}}
-\item \href{#method-CallbackSetLRScheduler-clone}{\code{CallbackSetLRScheduler$clone()}}
+  \itemize{
+    \item \href{#method-CallbackSetLRScheduler-initialize}{\code{CallbackSetLRScheduler$new()}}
+    \item \href{#method-CallbackSetLRScheduler-on_begin}{\code{CallbackSetLRScheduler$on_begin()}}
+    \item \href{#method-CallbackSetLRScheduler-state_dict}{\code{CallbackSetLRScheduler$state_dict()}}
+    \item \href{#method-CallbackSetLRScheduler-load_state_dict}{\code{CallbackSetLRScheduler$load_state_dict()}}
+    \item \href{#method-CallbackSetLRScheduler-clone}{\code{CallbackSetLRScheduler$clone()}}
+  }
 }
-}
-\if{html}{\out{
-<details open><summary>Inherited methods</summary>
+\if{html}{\out{<details open><summary>Inherited methods</summary>
 <ul>
-<li><span class="pkg-link" data-pkg="mlr3torch" data-topic="CallbackSet" data-id="load_state_dict"><a href='../../mlr3torch/html/CallbackSet.html#method-CallbackSet-load_state_dict'><code>mlr3torch::CallbackSet$load_state_dict()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3torch" data-topic="CallbackSet" data-id="print"><a href='../../mlr3torch/html/CallbackSet.html#method-CallbackSet-print'><code>mlr3torch::CallbackSet$print()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3torch" data-topic="CallbackSet" data-id="state_dict"><a href='../../mlr3torch/html/CallbackSet.html#method-CallbackSet-state_dict'><code>mlr3torch::CallbackSet$state_dict()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3torch" data-topic="CallbackSet" data-id="print"><a href='../../mlr3torch/html/CallbackSet.html#method-CallbackSet-print'><code>CallbackSet$print()</code></a></span></li>
 </ul>
-</details>
-}}
+</details>}}
 \if{html}{\out{<hr>}}
-\if{html}{\out{<a id="method-CallbackSetLRScheduler-new"></a>}}
-\if{latex}{\out{\hypertarget{method-CallbackSetLRScheduler-new}{}}}
-\subsection{Method \code{new()}}{
-Creates a new instance of this \link[R6:R6Class]{R6} class.
-\subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{CallbackSetLRScheduler$new(.scheduler, step_on_epoch, ...)}\if{html}{\out{</div>}}
-}
-
-\subsection{Arguments}{
-\if{html}{\out{<div class="arguments">}}
-\describe{
-\item{\code{.scheduler}}{(\code{lr_scheduler_generator})\cr
+\if{html}{\out{<a id="method-CallbackSetLRScheduler-initialize"></a>}}
+\if{latex}{\out{\hypertarget{method-CallbackSetLRScheduler-initialize}{}}}
+\subsection{\code{CallbackSetLRScheduler$new()}}{
+  Creates a new instance of this \link[R6:R6Class]{R6} class.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{CallbackSetLRScheduler$new(.scheduler, step_on_epoch, ...)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{.scheduler}}{(\code{lr_scheduler_generator})\cr
 The \code{torch} scheduler generator (e.g. \code{torch::lr_step}).}
-
-\item{\code{step_on_epoch}}{(\code{logical(1)})\cr
+      \item{\code{step_on_epoch}}{(\code{logical(1)})\cr
 Whether the scheduler steps after every epoch (otherwise every batch).}
-
-\item{\code{...}}{(any)\cr
+      \item{\code{...}}{(any)\cr
 The scheduler-specific initialization arguments.}
+    }
+    \if{html}{\out{</div>}}
+  }
 }
-\if{html}{\out{</div>}}
-}
-}
+
 \if{html}{\out{<hr>}}
 \if{html}{\out{<a id="method-CallbackSetLRScheduler-on_begin"></a>}}
 \if{latex}{\out{\hypertarget{method-CallbackSetLRScheduler-on_begin}{}}}
-\subsection{Method \code{on_begin()}}{
-Creates the scheduler using the optimizer from the context
-\subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{CallbackSetLRScheduler$on_begin()}\if{html}{\out{</div>}}
+\subsection{\code{CallbackSetLRScheduler$on_begin()}}{
+  Creates the scheduler using the optimizer from the context
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{CallbackSetLRScheduler$on_begin()}
+    \if{html}{\out{</div>}}
+  }
 }
 
+\if{html}{\out{<hr>}}
+\if{html}{\out{<a id="method-CallbackSetLRScheduler-state_dict"></a>}}
+\if{latex}{\out{\hypertarget{method-CallbackSetLRScheduler-state_dict}{}}}
+\subsection{\code{CallbackSetLRScheduler$state_dict()}}{
+  Returns the state of the wrapped \code{torch} scheduler, so that a later run can continue the
+schedule instead of starting it over.
+Returns \code{NULL} if the scheduler was not created yet, i.e. before the training loop began.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{CallbackSetLRScheduler$state_dict()}
+    \if{html}{\out{</div>}}
+  }
 }
+
+\if{html}{\out{<hr>}}
+\if{html}{\out{<a id="method-CallbackSetLRScheduler-load_state_dict"></a>}}
+\if{latex}{\out{\hypertarget{method-CallbackSetLRScheduler-load_state_dict}{}}}
+\subsection{\code{CallbackSetLRScheduler$load_state_dict()}}{
+  Loads the state of the wrapped \code{torch} scheduler.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{CallbackSetLRScheduler$load_state_dict(state_dict)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{state_dict}}{(named \code{list()})\cr
+The state dict as retrieved via \verb{$state_dict()}.}
+    }
+    \if{html}{\out{</div>}}
+  }
+}
+
 \if{html}{\out{<hr>}}
 \if{html}{\out{<a id="method-CallbackSetLRScheduler-clone"></a>}}
 \if{latex}{\out{\hypertarget{method-CallbackSetLRScheduler-clone}{}}}
-\subsection{Method \code{clone()}}{
-The objects of this class are cloneable with this method.
-\subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{CallbackSetLRScheduler$clone(deep = FALSE)}\if{html}{\out{</div>}}
+\subsection{\code{CallbackSetLRScheduler$clone()}}{
+  The objects of this class are cloneable with this method.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{CallbackSetLRScheduler$clone(deep = FALSE)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{deep}}{Whether to make a deep clone.}
+    }
+    \if{html}{\out{</div>}}
+  }
 }
 
-\subsection{Arguments}{
-\if{html}{\out{<div class="arguments">}}
-\describe{
-\item{\code{deep}}{Whether to make a deep clone.}
-}
-\if{html}{\out{</div>}}
-}
-}
 }

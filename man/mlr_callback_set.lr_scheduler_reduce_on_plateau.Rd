@@ -5,62 +5,95 @@
 \alias{CallbackSetLRSchedulerReduceOnPlateau}
 \title{Reduce On Plateau Learning Rate Scheduler}
 \description{
-Reduces the learning rate when the first validation metric stops improving for \code{patience} epochs.
-Wraps \code{\link[torch:lr_reduce_on_plateau]{torch::lr_reduce_on_plateau()}}
+Reduces the learning rate when the first validation measure, i.e. the first entry of the
+learner's \code{measures_valid}, stops improving for \code{patience} evaluation steps.
+Wraps \code{\link[torch:lr_reduce_on_plateau]{torch::lr_reduce_on_plateau()}}.
+
+Note that \code{patience} counts \emph{evaluation steps}, not epochs: when the learner's \code{eval_freq} is
+greater than \code{1}, the scheduler only steps in the epochs in which the validation measures are
+evaluated, so \code{patience} evaluation steps correspond to \code{patience * eval_freq} epochs.
+
+Unless \code{mode} is set, it is derived from the measure: \code{"min"} if the measure is minimized and
+\code{"max"} if it is maximized. Training fails when \code{mode} contradicts the measure.
+When the learner has no validation measure, e.g. in the final fit of an
+\code{\link[mlr3tuning:AutoTuner]{AutoTuner}} that tunes the epochs internally, a warning is given and
+the learning rate is not reduced.
 }
+\section{Resuming}{
+
+As for \code{\link{CallbackSetLRScheduler}}. For this schedule the restored state includes the best score
+seen so far and how long it has been stagnating, so \code{patience} keeps counting across runs instead
+of starting over.
+}
+
 \section{Super classes}{
-\code{\link[mlr3torch:CallbackSet]{mlr3torch::CallbackSet}} -> \code{\link[mlr3torch:CallbackSetLRScheduler]{mlr3torch::CallbackSetLRScheduler}} -> \code{CallbackSetLRSchedulerReduceOnPlateau}
+\code{\link[mlr3torch:CallbackSet]{CallbackSet}} -> \code{\link[mlr3torch:CallbackSetLRScheduler]{CallbackSetLRScheduler}} -> \code{CallbackSetLRSchedulerReduceOnPlateau}
 }
 \section{Methods}{
 \subsection{Public methods}{
-\itemize{
-\item \href{#method-CallbackSetLRSchedulerReduceOnPlateau-new}{\code{CallbackSetLRSchedulerReduceOnPlateau$new()}}
-\item \href{#method-CallbackSetLRSchedulerReduceOnPlateau-clone}{\code{CallbackSetLRSchedulerReduceOnPlateau$clone()}}
+  \itemize{
+    \item \href{#method-CallbackSetLRSchedulerReduceOnPlateau-initialize}{\code{CallbackSetLRSchedulerReduceOnPlateau$new()}}
+    \item \href{#method-CallbackSetLRSchedulerReduceOnPlateau-on_begin}{\code{CallbackSetLRSchedulerReduceOnPlateau$on_begin()}}
+    \item \href{#method-CallbackSetLRSchedulerReduceOnPlateau-clone}{\code{CallbackSetLRSchedulerReduceOnPlateau$clone()}}
+  }
 }
-}
-\if{html}{\out{
-<details open><summary>Inherited methods</summary>
+\if{html}{\out{<details open><summary>Inherited methods</summary>
 <ul>
-<li><span class="pkg-link" data-pkg="mlr3torch" data-topic="CallbackSet" data-id="load_state_dict"><a href='../../mlr3torch/html/CallbackSet.html#method-CallbackSet-load_state_dict'><code>mlr3torch::CallbackSet$load_state_dict()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3torch" data-topic="CallbackSet" data-id="print"><a href='../../mlr3torch/html/CallbackSet.html#method-CallbackSet-print'><code>mlr3torch::CallbackSet$print()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3torch" data-topic="CallbackSet" data-id="state_dict"><a href='../../mlr3torch/html/CallbackSet.html#method-CallbackSet-state_dict'><code>mlr3torch::CallbackSet$state_dict()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3torch" data-topic="CallbackSetLRScheduler" data-id="on_begin"><a href='../../mlr3torch/html/CallbackSetLRScheduler.html#method-CallbackSetLRScheduler-on_begin'><code>mlr3torch::CallbackSetLRScheduler$on_begin()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3torch" data-topic="CallbackSet" data-id="print"><a href='../../mlr3torch/html/CallbackSet.html#method-CallbackSet-print'><code>CallbackSet$print()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3torch" data-topic="CallbackSetLRScheduler" data-id="load_state_dict"><a href='../../mlr3torch/html/CallbackSetLRScheduler.html#method-CallbackSetLRScheduler-load_state_dict'><code>CallbackSetLRScheduler$load_state_dict()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3torch" data-topic="CallbackSetLRScheduler" data-id="state_dict"><a href='../../mlr3torch/html/CallbackSetLRScheduler.html#method-CallbackSetLRScheduler-state_dict'><code>CallbackSetLRScheduler$state_dict()</code></a></span></li>
 </ul>
-</details>
-}}
+</details>}}
 \if{html}{\out{<hr>}}
-\if{html}{\out{<a id="method-CallbackSetLRSchedulerReduceOnPlateau-new"></a>}}
-\if{latex}{\out{\hypertarget{method-CallbackSetLRSchedulerReduceOnPlateau-new}{}}}
-\subsection{Method \code{new()}}{
-Creates a new instance of this \link[R6:R6Class]{R6} class.
-\subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{CallbackSetLRSchedulerReduceOnPlateau$new(...)}\if{html}{\out{</div>}}
+\if{html}{\out{<a id="method-CallbackSetLRSchedulerReduceOnPlateau-initialize"></a>}}
+\if{latex}{\out{\hypertarget{method-CallbackSetLRSchedulerReduceOnPlateau-initialize}{}}}
+\subsection{\code{CallbackSetLRSchedulerReduceOnPlateau$new()}}{
+  Creates a new instance of this \link[R6:R6Class]{R6} class.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{CallbackSetLRSchedulerReduceOnPlateau$new(...)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{...}}{(any)\cr
+The scheduler-specific initialization arguments.}
+    }
+    \if{html}{\out{</div>}}
+  }
 }
 
-\subsection{Arguments}{
-\if{html}{\out{<div class="arguments">}}
-\describe{
-\item{\code{...}}{(any)\cr
-The scheduler-specific initialization arguments.}
+\if{html}{\out{<hr>}}
+\if{html}{\out{<a id="method-CallbackSetLRSchedulerReduceOnPlateau-on_begin"></a>}}
+\if{latex}{\out{\hypertarget{method-CallbackSetLRSchedulerReduceOnPlateau-on_begin}{}}}
+\subsection{\code{CallbackSetLRSchedulerReduceOnPlateau$on_begin()}}{
+  Creates the scheduler using the optimizer from the context, with the \code{mode} that fits the
+first validation measure.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{CallbackSetLRSchedulerReduceOnPlateau$on_begin()}
+    \if{html}{\out{</div>}}
+  }
 }
-\if{html}{\out{</div>}}
-}
-}
+
 \if{html}{\out{<hr>}}
 \if{html}{\out{<a id="method-CallbackSetLRSchedulerReduceOnPlateau-clone"></a>}}
 \if{latex}{\out{\hypertarget{method-CallbackSetLRSchedulerReduceOnPlateau-clone}{}}}
-\subsection{Method \code{clone()}}{
-The objects of this class are cloneable with this method.
-\subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{CallbackSetLRSchedulerReduceOnPlateau$clone(deep = FALSE)}\if{html}{\out{</div>}}
+\subsection{\code{CallbackSetLRSchedulerReduceOnPlateau$clone()}}{
+  The objects of this class are cloneable with this method.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{CallbackSetLRSchedulerReduceOnPlateau$clone(deep = FALSE)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{deep}}{Whether to make a deep clone.}
+    }
+    \if{html}{\out{</div>}}
+  }
 }
 
-\subsection{Arguments}{
-\if{html}{\out{<div class="arguments">}}
-\describe{
-\item{\code{deep}}{Whether to make a deep clone.}
-}
-\if{html}{\out{</div>}}
-}
-}
 }

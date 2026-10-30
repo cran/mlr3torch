@@ -31,12 +31,39 @@ into a useable state.
 
 \section{Early Stopping and Internal Tuning}{
 
-In order to prevent overfitting, the \code{LearnerTorch} class allows to use early stopping via the \code{patience}
+In order to prevent overfitting, the \code{LearnerTorch} class supports early stopping via the \code{patience}
 and \code{min_delta} parameters, see the \code{Learner}'s parameters.
 When tuning a \code{LearnerTorch} it is also possible to combine the explicit tuning via \code{mlr3tuning}
 and the \code{LearnerTorch}'s internal tuning of the epochs via early stopping.
 To do so, you just need to include \verb{epochs = to_tune(upper = <upper>, internal = TRUE)} in the search space,
 where \verb{<upper>} is the maximally allowed number of epochs, and configure the early stopping.
+}
+
+\section{Checkpointing and Resuming}{
+
+It is possible to save intermediate results from a run via the
+\code{\link[=mlr_callback_set.checkpoint]{t_clbk("checkpoint")}} callback.
+It is then possible to train for more epochs by setting the \code{resume} parameter of the \code{LearnerTorch}.
+This parameter can either be a path or \code{TRUE} which will use the path of the provided checkpoint
+callback.
+Only the number of epochs should be changed between resumed runs, other parameter changes
+are considered undefined behavior.
+Also, make sure to use the same train-validation split.
+When the latest written checkpoint was for \code{n1} epochs, the learner needs to be configured
+to be trained for \code{n >= n1} epochs and the training will run for \code{n2 = n - n1} epochs.
+With \code{n = n1} the checkpointed run is already finished, so nothing is trained and the model of
+the checkpoint is returned -- which is what lets a script that restarts itself be run again
+after it succeeded, and what recovers the model of a run that was killed after its last epoch.
+Configuring \code{n < n1} is an error.
+Resuming will load the network weights, optimizer states and callback states.
+For some callbacks, training for \code{n1} and then \code{n2} epochs via resuming is not the same as
+training for \code{n} epochs from the start.
+This is for example the case for learning rate schedulers that depend on the total number of epochs
+to train for.
+The callbacks document their behavior under a corresponding
+\emph{Resuming} section in their documentation.
+Furthermore, rng states are not restored, which constitutes another difference between a full
+and a resumed training run.
 }
 
 \section{Network Head and Target Encoding}{
@@ -48,15 +75,71 @@ Torch learners are expected to have the following output:
 \item regression: \verb{(batch_size, 1)} representing the response prediction.
 }
 
+A network may return more than one tensor, in which case it returns a \code{list()} of them.
+There are two typical reasons for this:
+\itemize{
+\item Networks with auxiliary classifiers such as \code{\link[=mlr_learners.torchvision]{Inception v3}} return
+additional predictions that only exist to contribute to the loss during training. Here, every
+element has the shape given above and the first one is the prediction of interest.
+\item A prediction that consists of several quantities -- e.g. a mean and a standard deviation -- is
+expressed by returning one tensor per quantity, which the prediction encoding combines.
+}
+
+In both cases the complete output is what the rest of the learner works with:
+\itemize{
+\item The loss is applied to it. Because the configured loss expects a single tensor, a learner
+whose network returns a list has to wrap it in \code{.setup_training()}, see the list of
+methods below. \code{\link{ContextTorch}} makes the output available as \code{ctx$y_hats}.
+\item The prediction is encoded from it, both when predicting and when calculating the training and
+validation scores, so \code{.encode_prediction()} always receives the complete network output. Such
+a learner needs an \code{\link[=encode_prediction]{encode_prediction()}} method for its task type, or has to overload the
+private \code{.encode_prediction()} method, because the encodings of the built-in task types expect
+a single tensor.
+}
+
+Note that the complete output is whatever the network returned in the mode it was called in, so a
+network whose extra tensors exist only during training -- as auxiliary classifiers do -- returns a
+different structure during training than during prediction, and \code{.encode_prediction()} has to
+handle both. \code{classif.inception_v3} does this by encoding only the prediction of the main
+classifier.
+
 Furthermore, the target encoding is expected to be as follows:
 \itemize{
 \item regression: The \code{numeric} target variable of a \code{\link[mlr3:TaskRegr]{TaskRegr}} is encoded as a
-\code{\link[torch:torch_dtype]{torch_float}} with shape \code{c(batch_size, 1)}.
+\code{\link[torch:torch_float]{torch_float}} with shape \code{c(batch_size, 1)}.
 \item binary classification: The \code{factor} target variable of a \code{\link[mlr3:TaskClassif]{TaskClassif}} is encoded as a
-\code{\link[torch:torch_dtype]{torch_float}} with shape \verb{(batch_size, 1)} where the positive class (\code{Task$positive}, which
+\code{\link[torch:torch_float]{torch_float}} with shape \verb{(batch_size, 1)} where the positive class (\code{Task$positive}, which
 is also ensured to be the first factor level) is \code{1} and the negative class is \code{0}.
 \item multi-class classification: The \code{factor} target variable of a \code{\link[mlr3:TaskClassif]{TaskClassif}} is a label-encoded
-\code{\link[torch:torch_dtype]{torch_long}} with shape \code{(batch_size)} where the label-encoding goes from \code{1} to \code{n_classes}.
+\code{\link[torch:torch_long]{torch_long}} with shape \code{(batch_size)} where the label-encoding goes from \code{1} to \code{n_classes}.
+}
+}
+
+\section{Predicting Tensors}{
+
+The predict type \code{"lazy_tensor"}, available for the task type \code{"torch"}, hands back what the
+network produced -- a \code{\link{lazy_tensor}} with one element per observation -- instead of asking the
+task's \code{default_encoder} to turn it into a response.
+It is how to get at the logits of a classifier or the reconstruction of an autoencoder, and a
+task predicted this way needs no encoder at all.
+Unlike \code{"prob"} and \code{"se"} it is not opt-in: every learner for this task type has it among its
+\verb{$predict_types}, because handing the output back does not depend on how the learner encodes a
+prediction. Set \code{learner$predict_type = "lazy_tensor"} to use it.
+A network with more than one head hands back one \code{\link{lazy_tensor}} per head, held in a
+\code{\link[data.table:data.table]{data.table}} with one column per head so that the prediction is still
+one row per observation; \code{as.data.table()} spreads it into \verb{lazy_tensor.<head>} columns.
+
+Two things to know before using it:
+\itemize{
+\item \strong{Such a prediction does not survive \code{\link[base:saveRDS]{saveRDS()}}.} It holds \code{torch} tensors,
+which are external pointers: saving \emph{succeeds}, and the object then fails with
+\emph{external pointer is not valid} the next time the tensors are touched, in this session or in
+another. This applies to a \code{\link[mlr3:ResampleResult]{ResampleResult}} holding one as well -- its
+row ids and scores survive, its tensors do not.
+\item Nothing about it is lazy. A \code{\link{lazy_tensor}} built from a tensor holds that tensor, so a
+prediction of this type is the network's output in memory, and \code{resample()} holds every fold's
+-- combining the folds concatenates them, since lazy tensors from different networks share no
+data descriptor and cannot be concatenated lazily.
 }
 }
 
@@ -67,11 +150,64 @@ These include:
 \itemize{
 \item \code{device}: Use a GPU if possible.
 \item \code{num_threads}: Set this to the number of CPU cores available if training on CPU.
+When resampling, benchmarking or tuning in parallel, each worker uses \code{num_threads} threads, so
+divide the available cores among the workers instead to avoid oversubscribing the machine.
 \item \code{tensor_dataset}: Set this to \code{TRUE} (or \code{"device"} if on a GPU) if the dataset fits into memory.
+This loads and stacks every batch once up front, so it must not be used with a \code{\link{lazy_tensor}}
+that applies random data augmentation -- the augmentation would then be drawn only once.
 \item \code{batch_size}: Especially for very small models, choose a larger batch size.
+\item \code{batch_size_predict}: Prediction has no backward pass and so fits larger batches than training.
+\item \code{jit_trace}: Set this to \code{TRUE} to remove the per-batch R interpreter overhead, but only for a
+network whose control flow and shapes do not depend on the data. See the parameter's own entry.
+\item \code{num_workers}: Load batches in parallel worker processes.
+\item \code{pin_memory}: With a GPU, this speeds up the host-to-device copy of each batch.
 }
 
 Also, see the \emph{Early Stopping and Internal Tuning} section for how to terminate training early.
+}
+
+\section{Multiple GPUs}{
+
+A single model is trained on one device. Set \code{device} to \code{"cuda"} for the default GPU, or to
+\code{"cuda:<index>"}, e.g. \code{"cuda:1"}, for a specific one.
+
+To spread resampling, benchmarking or tuning over several GPUs, start one \code{\link[mirai:mirai]{mirai}}
+daemon per GPU and restrict each daemon to its own GPU with the environment variable
+\code{CUDA_VISIBLE_DEVICES}. Inside a daemon, its GPU is then the only one, so \code{device = "cuda"} is
+correct for every resampling iteration. A device index such as \code{"cuda:1"} does not help here,
+because all iterations share the same parameter values.
+mlr3 uses the daemons of the compute profile \code{"mlr3_parallelization"}, and a daemon inherits the
+environment variables of the R session that launches it:
+
+\if{html}{\out{<div class="sourceCode r">}}\preformatted{library(mirai)
+gpus = c("0", "1")
+daemons(url = local_url(), .compute = "mlr3_parallelization")
+for (id in gpus) \{
+  Sys.setenv(CUDA_VISIBLE_DEVICES = id)
+  launch_local(1, .compute = "mlr3_parallelization")
+\}
+Sys.unsetenv("CUDA_VISIBLE_DEVICES")
+
+learner = lrn("classif.mlp", device = "cuda", epochs = 50, batch_size = 64)
+rr = resample(tsk("spam"), learner, rsmp("cv", folds = 10))
+daemons(0, .compute = "mlr3_parallelization")
+}\if{html}{\out{</div>}}
+
+Each resampling iteration goes to the next free daemon, so all GPUs stay busy until fewer
+iterations than GPUs remain.
+
+Things to avoid:
+\itemize{
+\item \code{daemons(n)} alone: every daemon sees all GPUs, and \code{"cuda"} is the first GPU in each of them,
+so all iterations share that one GPU.
+\item Forking a process that has already initialized CUDA, e.g. with \code{future::plan("multicore")}.
+\item A high \code{num_threads}: data loading and preprocessing still run on the CPU in all daemons at
+once, so divide the CPU cores among them.
+}
+
+Several daemons per GPU only pay off when one model leaves the GPU underused, e.g. because it is
+small and training is bound by the per-batch overhead in R. Then all models must also fit into
+that GPU's memory together.
 }
 
 \section{Model}{
@@ -100,15 +236,21 @@ prefixed with \code{"opt."}, \code{"loss."} and \code{"cb.<callback id>."} respe
 The number of epochs.
 \item \code{device} :: \code{character(1)}\cr
 The device. One of \code{"auto"}, \code{"cpu"}, or \code{"cuda"} or other values defined in \code{mlr_reflections$torch$devices}.
+A specific device can be selected by appending its index, e.g. \code{"cuda:1"} for the second GPU.
 The value is initialized to \code{"auto"}, which will select \code{"cuda"} if possible, then try \code{"mps"} and otherwise
 fall back to \code{"cpu"}.
 \item \code{num_threads} :: \code{integer(1)}\cr
-The number of threads for intraop pararallelization (if \code{device} is \code{"cpu"}).
+The number of threads for intraop parallelization (if \code{device} is \code{"cpu"}).
 This value is initialized to 1.
+When resampling, benchmarking or tuning in parallel, each worker uses this many threads, so
+divide the available cores among the workers instead of setting this to the number of cores.
 \item \code{num_interop_threads} :: \code{integer(1)}\cr
-The number of threads for intraop and interop pararallelization (if \code{device} is \code{"cpu"}).
-This value is initialized to 1.
-Note that this can only be set once during a session and changing the value within an R session will raise a warning.
+The number of threads for interop parallelization (if \code{device} is \code{"cpu"}).
+Note that this can only be set \strong{once} per session, so setting this for one learner also changes the
+behavior of other learners, and a later learner asking for a different value errors.
+\code{NULL} (default) uses whatever is set.
+In order to use different values for this parameter, use encapsulation to train the learners
+in separate R sessions.
 \item \code{seed} :: \code{integer(1)} or \code{"random"} or \code{NULL}\cr
 The torch seed that is used during training and prediction.
 This value is initialized to \code{"random"}, which means that a random seed will be sampled at the beginning of the
@@ -117,6 +259,9 @@ and used during prediction.
 Note that by setting the seed during the training phase this will mean that by default (i.e. when \code{seed} is
 \code{"random"}), clones of the learner will use a different seed.
 If set to \code{NULL}, no seeding will be done.
+This parameter only seeds torch's random number generator, it does \strong{not} seed R's.
+Anything that is drawn from R's RNG is therefore unaffected by it, so to make those parts
+reproducible you need to seed R's RNG as well, e.g. via \code{\link[=set.seed]{set.seed()}}.
 \item \code{tensor_dataset} :: \code{logical(1)} | \code{"device"}\cr
 Whether to load all batches at once at the beginning of training and stack them.
 This is initialized to \code{FALSE}.
@@ -125,6 +270,19 @@ can avoid unnecessary moving of tensors between devices.
 When your dataset fits into memory this will make the loading of batches faster.
 Note that this should not be set for datasets that contain \code{\link{lazy_tensor}}s with random data augmentation,
 as this augmentation will only be applied once at the beginning of training.
+\item \code{cache_task_data} :: \code{logical(1)}\cr
+Whether to retrieve the data from the task once and to take the batches from it, instead of retrieving every
+batch from the task, which is slow.
+This is initialized to \code{TRUE}. Set it to \code{FALSE} if a copy of the task data does not fit into memory
+(lazy tensor columns only contain indices and are small).
+\item \code{jit_trace} :: \code{logical(1)}\cr
+Whether to trace the network with \code{\link[torch:jit_trace]{torch::jit_trace()}} once at the start of training and then
+train the traced module instead of the original one.
+Not all learners support this.
+A traced network takes its inputs by position and ignores their names
+(\href{https://github.com/mlverse/torch/issues/1495}{mlverse/torch#1495}).
+The learner passes the inputs in the right order, but when calling the traced \verb{$network} of a trained learner
+with several inputs directly, they must be passed by position in the order given by \code{attr(learner$network, "input_order")}.
 }
 
 \strong{Evaluation}:
@@ -139,33 +297,67 @@ This is initialized to \code{1}.
 Note that the final model is always evaluated.
 }
 
+\strong{Resuming}:
+\itemize{
+\item \code{resume} :: \code{character(1)} or \code{TRUE}\cr
+Continues training from a checkpoint written by
+\code{\link[=mlr_callback_set.checkpoint]{t_clbk("checkpoint")}}, either the folder it wrote to or \code{TRUE},
+which takes that folder from the checkpoint callback of this learner.
+Note that \code{epochs} is the \emph{total} number of epochs, i.e. it includes the epochs the checkpoint
+was already trained for: resuming a checkpoint from epoch 5 with \code{epochs = 8} trains 3 more
+epochs.
+}
+
 \strong{Early Stopping}:
 \itemize{
 \item \code{patience} :: \code{integer(1)}\cr
 This activates early stopping using the validation scores.
 If the performance of a model does not improve for \code{patience} evaluation steps, training is ended.
-Note that the final model is stored in the learner, not the best model.
+Note that this counts \emph{evaluation steps}, not epochs: when \code{eval_freq} is greater than \code{1},
+\code{patience} evaluation steps correspond to \code{patience * eval_freq} epochs.
+Note that the final model is stored in the learner, not the best model, unless
+\code{restore_best_weights} is set to \code{TRUE}.
 This is initialized to \code{0}, which means no early stopping.
 The first entry from \code{measures_valid} is used as the metric.
+A missing (\code{NA}) score counts as no improvement, and every score improves on a missing one.
+If all scores are missing, the first evaluated epoch is reported as the best one.
 This also requires to specify the \verb{$validate} field of the Learner, as well as \code{measures_valid}.
-If this is set, the epoch after which no improvement was observed, can be accessed via the \verb{$internal_tuned_values}
-field of the learner.
 \item \code{min_delta} :: \code{double(1)}\cr
 The minimum improvement threshold for early stopping.
 Is initialized to 0.
+\item \code{restore_best_weights} :: \code{logical(1)}\cr
+Whether to restore the weights of the best epoch when training ends, instead of keeping those
+of the last epoch that was trained. Like \code{min_delta}, this only has an effect when early stopping
+is active.
+Is initialized to \code{FALSE}, i.e. the network of the last
+epoch is stored. Setting this to \code{TRUE} makes the stored network the one of the epoch that
+\verb{$internal_tuned_values} reports, and costs one additional copy of the network's parameters in
+memory.
 }
 
 \strong{Dataloader}:
 \itemize{
 \item \code{batch_size} :: \code{integer(1)}\cr
-The batch size (required).
+The batch size used by the training and prediction dataloader.
+It is required for training (unless a \code{batch_sampler} is provided, which already determines the
+batches) and it is required for prediction (unless \code{batch_size_predict} is set).
+\item \code{batch_size_predict} :: \code{integer(1)}\cr
+The batch size used by the prediction dataloader (this includes the validation data during
+training). When set, it overrides \code{batch_size} for prediction.
+The batch size does not change the predictions, but smaller batches take longer and require less
+memory.
 \item \code{shuffle} :: \code{logical(1)}\cr
 Whether to shuffle the instances in the dataset. This is initialized to \code{TRUE},
 which differs from the default (\code{FALSE}).
+It is ignored when a \code{sampler} or \code{batch_sampler} is provided.
 \item \code{sampler} :: \code{\link[torch:sampler]{torch::sampler}}\cr
-Object that defines how the dataloader draw samples.
+Object that defines how the dataloader draws samples, i.e. the order in which the observations are
+drawn. This must be the sampler \emph{generator} (as returned by \code{\link[torch:sampler]{torch::sampler()}}), not an instance,
+as it is instantiated with the training dataset internally.
 \item \code{batch_sampler} :: \code{\link[torch:sampler]{torch::sampler}}\cr
-Object that defines how the dataloader draws batches.
+Object that defines how the dataloader draws batches. As for \code{sampler}, this must be the generator.
+When it is provided, the parameters \code{batch_size}, \code{shuffle} and \code{drop_last} are ignored during
+training, because the batch sampler already determines the batches.
 \item \code{num_workers} :: \code{integer(1)}\cr
 The number of workers for data loading (batches are loaded in parallel).
 The default is \code{0}, which means that data will be loaded in the main process.
@@ -175,28 +367,42 @@ How to merge a list of samples to form a batch.
 Whether the dataloader copies tensors into CUDA pinned memory before returning them.
 \item \code{drop_last} :: \code{logical(1)}\cr
 Whether to drop the last training batch in each epoch during training. Default is \code{FALSE}.
+If it is \code{TRUE}, the batch size is capped at the number of training observations, so that
+not all of them are dropped.
+It is ignored when a \code{batch_sampler} is provided.
 \item \code{timeout} :: \code{numeric(1)}\cr
 The timeout value for collecting a batch from workers.
 Negative values mean no timeout and the default is \code{-1}.
 \item \code{worker_init_fn} :: \verb{function(id)}\cr
-A function that receives the worker id (in \verb{[1, num_workers]}) and is exectued after seeding
+A function that receives the worker id (in \verb{[1, num_workers]}) and is executed after seeding
 on the worker but before data loading.
 \item \code{worker_globals} :: \code{list()} | \code{character()}\cr
-When loading data in parallel, this allows to export globals to the workers.
+When loading data in parallel, this makes it possible to export globals to the workers.
 If this is a character vector, the objects in the global environment with those names
 are copied to the workers.
 \item \code{worker_packages} :: \code{character()}\cr
 Which packages to load on the workers.
 }
 
-Also see \code{torch::dataloder} for more information.
+Also see \code{torch::dataloader} for more information.
 }
 
 \section{Inheriting}{
 
-There are no seperate classes for classification and regression to inherit from.
-Instead, the \code{task_type} must be specified  as a construction argument.
-Currently, only classification and regression are supported.
+There are no separate classes for classification and regression to inherit from.
+Instead, the \code{task_type} must be specified as a construction argument.
+Any task type that is registered in
+\code{\link[mlr3:mlr_reflections]{mlr_reflections$task_types}} can be used.
+Support for a task type that \CRANpkg{mlr3torch} does not know is added by implementing methods for
+the three S3 generics that hold the task-type-specific behaviour: \code{\link[=output_dim_for]{output_dim_for()}} (how many
+output neurons the network needs), \code{\link[=get_target_batchgetter]{get_target_batchgetter()}} (how the target is turned into a
+tensor) and \code{\link[=encode_prediction]{encode_prediction()}} (how the network's output is turned back into a prediction).
+Such a learner also has to be given a \code{loss} explicitly, unless a default loss is registered for the
+task type by adding the id of a loss from \code{\link{mlr3torch_losses}} to \code{mlr_reflections$torch$default_losses},
+e.g. \code{mlr_reflections$torch$default_losses$surv = "my_surv_loss"}.
+See the \emph{Adding a New Task Type} article for a complete example.
+This class can also be used for custom task types, see \code{\link{TaskTorch}} and the
+\emph{Custom Learning Problems} article for more information.
 
 When inheriting from this class, one should overload the following methods:
 \itemize{
@@ -205,7 +411,31 @@ When inheriting from this class, one should overload the following methods:
 Construct a \code{\link[torch:nn_module]{torch::nn_module}} object for the given task and parameter values, i.e. the neural network that
 is trained by the learner.
 Note that a specific output shape is expected from the returned network, see section \emph{Network Head and Target Encoding}.
+That section also describes when a network can return more than one tensor.
 You can use \code{\link[=output_dim_for]{output_dim_for()}} to obtain the correct output dimension for a given task.
+\item \code{.setup_training(ctx, param_vals)}\cr
+(\code{\link{ContextTorch}}, \code{list()}) -> \code{NULL}\cr
+Customizes a training run by modifying the context in place; the default does nothing.
+It is called once the data loaders, the network and the configured loss
+(\code{self$loss$generate(task)}) are created, and before training (or resuming) starts.
+At this point, \code{ctx$optimizer} is \code{NULL} and \code{ctx$callbacks} contains the configured callbacks.
+The method may:
+\itemize{
+\item replace \code{ctx$network}. This is also the network that is used for prediction.
+\item replace \code{ctx$loss_fn}, e.g. to wrap the configured loss when the network returns more than
+one prediction, see the \code{aux_logits} parameter of
+\code{\link[=mlr_learners.torchvision]{classif.inception_v3}}.
+\item set \code{ctx$optimizer}, e.g. to \code{self$optimizer$generate(groups)} with parameter groups for
+parameter-specific learning rates. Otherwise, the optimizer is generated from the final
+\code{ctx$network} afterwards. Use \code{self$optimizer$generate()}, so that the optimizer's parameters
+(including \code{param_groups}) are respected, and set the optimizer after replacing the network.
+\item add callbacks to \code{ctx$callbacks}. The configured callbacks may not be removed or replaced, and
+the id \code{"early_stopping"} is reserved.
+}
+
+Call \code{super$.setup_training(ctx, param_vals)} first. The method must be deterministic given
+\code{param_vals}, so that resuming from a checkpoint can restore the optimizer and callback states.
+With \code{jit_trace = TRUE}, \code{ctx$network} is already traced.
 \item \code{.ingress_tokens(task, param_vals)}\cr
 (\code{\link[mlr3:Task]{Task}}, \code{list()}) -> named \code{list()} with \code{\link{TorchIngressToken}}s\cr
 Create the \code{\link{TorchIngressToken}}s that are passed to the \code{\link{task_dataset}} constructor.
@@ -235,23 +465,29 @@ It is also possible to overwrite the private \code{.dataloader()} method.
 This must respect the dataloader parameters from the \code{\link[paradox:ParamSet]{ParamSet}}.
 \itemize{
 \item \code{.dataloader(dataset, param_vals)}\cr
-(\code{\link[mlr3:Task]{Task}}, \code{list()}) -> \code{\link[torch:dataloader]{torch::dataloader}}\cr
-Create a dataloader from the task.
+(\code{\link[torch:dataset]{dataset}}, \code{list()}) -> \code{\link[torch:dataloader]{torch::dataloader}}\cr
+Create a dataloader from the dataset.
 Needs to respect at least \code{batch_size} and \code{shuffle} (otherwise predictions will be incorrectly ordered).
+Use \code{get_batch_size(param_vals, "train")} to obtain the batch size for the respective phase,
+which takes the \code{batch_size_predict} parameter into account.
 }
 
 To change the predict types, it is possible to overwrite the method below:
 \itemize{
-\item \code{.encode_prediction(predict_tensor, task)}\cr
-(\code{\link[torch:torch_tensor]{torch_tensor}}, \code{\link[mlr3:Task]{Task}}) -> \code{list()}\cr
-Take in the raw predictions from \code{self$network} (\code{predict_tensor}) and encode them into a
+\item \code{.encode_prediction(network_output, task)}\cr
+(\code{\link[torch:torch_tensor]{torch_tensor}} or \code{list()} of them, \code{\link[mlr3:Task]{Task}}) -> \code{list()}\cr
+Take in the raw predictions from \code{self$network} (\code{network_output}) and encode them into a
 format that can be converted to valid \code{mlr3} predictions using \code{\link[mlr3:as_prediction_data]{mlr3::as_prediction_data()}}.
+For classification, \code{task} has its classes in the order of the training task.
+It is a \code{list()} of tensors when the network returns more than one, see section
+\emph{Network Head and Target Encoding}.
 This method must take \code{self$predict_type} into account.
 }
 
 While it is possible to add parameters by specifying the \code{param_set} construction argument, it is currently
 not possible to remove existing parameters, i.e. those listed in section \emph{Parameters}.
-None of the parameters provided in \code{param_set} can have an id that starts with \code{"loss."}, \verb{"opt.", or }"cb."`, as these are preserved for the dynamically constructed parameters of the optimizer, the loss function,
+None of the parameters provided in \code{param_set} can have an id that starts with \code{"loss."}, \code{"opt."},
+or \code{"cb."}, as these are preserved for the dynamically constructed parameters of the optimizer, the loss function,
 and the callbacks.
 
 To perform additional input checks on the task, the private \code{.check_train_task(task, param_vals)} and
@@ -263,11 +499,15 @@ to implement the private \verb{$.additional_phash_input()}.
 }
 
 \seealso{
-Other Learner: 
+Other Learner:
+\code{\link{GraphLearnerTorch}},
+\code{\link[=as_learner_torch]{as_learner_torch()}},
 \code{\link{mlr_learners.ft_transformer}},
 \code{\link{mlr_learners.mlp}},
 \code{\link{mlr_learners.module}},
+\code{\link{mlr_learners.realmlp}},
 \code{\link{mlr_learners.tab_resnet}},
+\code{\link{mlr_learners.tabm}},
 \code{\link{mlr_learners.torch_featureless}},
 \code{\link{mlr_learners_torch_image}},
 \code{\link{mlr_learners_torch_model}}
@@ -277,81 +517,85 @@ Other Learner:
 \code{\link[mlr3:Learner]{mlr3::Learner}} -> \code{LearnerTorch}
 }
 \section{Active bindings}{
-\if{html}{\out{<div class="r6-active-bindings">}}
-\describe{
-\item{\code{validate}}{How to construct the internal validation data. This parameter can be either \code{NULL},
+  \if{html}{\out{<div class="r6-active-bindings">}}
+  \describe{
+    \item{\code{validate}}{How to construct the internal validation data. This parameter can be either \code{NULL},
 a ratio in $(0, 1)$, \code{"test"}, or \code{"predefined"}.}
 
-\item{\code{loss}}{(\code{\link{TorchLoss}})\cr
+    \item{\code{loss}}{(\code{\link{TorchLoss}})\cr
 The torch loss.}
 
-\item{\code{optimizer}}{(\code{\link{TorchOptimizer}})\cr
+    \item{\code{optimizer}}{(\code{\link{TorchOptimizer}})\cr
 The torch optimizer.}
 
-\item{\code{callbacks}}{(\code{list()} of \code{\link{TorchCallback}}s)\cr
+    \item{\code{callbacks}}{(\code{list()} of \code{\link{TorchCallback}}s)\cr
 List of torch callbacks.
 The ids will be set as the names.}
 
-\item{\code{internal_valid_scores}}{Retrieves the internal validation scores as a named \code{list()}.
+    \item{\code{internal_valid_scores}}{Retrieves the internal validation scores of the current network as a named \code{list()}.
+This is the \emph{last} epoch, unless \code{restore_best_weights} is \code{TRUE}.
 Specify the \verb{$validate} field and the \code{measures_valid} parameter to configure this.
 Returns \code{NULL} if learner is not trained yet.}
 
-\item{\code{internal_tuned_values}}{When early stopping is active, this returns a named list with the early-stopped epochs,
+    \item{\code{best_valid_scores}}{Retrieves the internal validation scores of the \emph{best} epoch as a named \code{list()}.
+Only available when doing early stopping.
+Note that \emph{best} here means with respect to the metric that was used for early stopping.}
+
+    \item{\code{internal_tuned_values}}{When early stopping is active, this returns a named list with the early-stopped epochs,
 otherwise an empty list is returned.
 Returns \code{NULL} if learner is not trained yet.}
 
-\item{\code{marshaled}}{(\code{logical(1)})\cr
+    \item{\code{marshaled}}{(\code{logical(1)})\cr
 Whether the learner is marshaled.}
 
-\item{\code{network}}{(\code{\link[torch:nn_module]{nn_module()}})\cr
+    \item{\code{network}}{(\code{\link[torch:nn_module]{nn_module()}})\cr
 Shortcut for \code{learner$model$network}.}
 
-\item{\code{param_set}}{(\code{\link[paradox:ParamSet]{ParamSet}})\cr
+    \item{\code{param_set}}{(\code{\link[paradox:ParamSet]{ParamSet}})\cr
 The parameter set}
 
-\item{\code{hash}}{(\code{character(1)})\cr
+    \item{\code{hash}}{(\code{character(1)})\cr
 Hash (unique identifier) for this object.}
 
-\item{\code{phash}}{(\code{character(1)})\cr
+    \item{\code{phash}}{(\code{character(1)})\cr
 Hash (unique identifier) for this partial object, excluding some components
 which are varied systematically during tuning (parameter values).}
-}
-\if{html}{\out{</div>}}
+  }
+  \if{html}{\out{</div>}}
 }
 \section{Methods}{
 \subsection{Public methods}{
-\itemize{
-\item \href{#method-LearnerTorch-new}{\code{LearnerTorch$new()}}
-\item \href{#method-LearnerTorch-format}{\code{LearnerTorch$format()}}
-\item \href{#method-LearnerTorch-print}{\code{LearnerTorch$print()}}
-\item \href{#method-LearnerTorch-marshal}{\code{LearnerTorch$marshal()}}
-\item \href{#method-LearnerTorch-unmarshal}{\code{LearnerTorch$unmarshal()}}
-\item \href{#method-LearnerTorch-dataset}{\code{LearnerTorch$dataset()}}
-\item \href{#method-LearnerTorch-clone}{\code{LearnerTorch$clone()}}
+  \itemize{
+    \item \href{#method-LearnerTorch-initialize}{\code{LearnerTorch$new()}}
+    \item \href{#method-LearnerTorch-format}{\code{LearnerTorch$format()}}
+    \item \href{#method-LearnerTorch-print}{\code{LearnerTorch$print()}}
+    \item \href{#method-LearnerTorch-marshal}{\code{LearnerTorch$marshal()}}
+    \item \href{#method-LearnerTorch-unmarshal}{\code{LearnerTorch$unmarshal()}}
+    \item \href{#method-LearnerTorch-dataset}{\code{LearnerTorch$dataset()}}
+    \item \href{#method-LearnerTorch-clone}{\code{LearnerTorch$clone()}}
+  }
 }
-}
-\if{html}{\out{
-<details><summary>Inherited methods</summary>
+\if{html}{\out{<details><summary>Inherited methods</summary>
 <ul>
-<li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="base_learner"><a href='../../mlr3/html/Learner.html#method-Learner-base_learner'><code>mlr3::Learner$base_learner()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="configure"><a href='../../mlr3/html/Learner.html#method-Learner-configure'><code>mlr3::Learner$configure()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="encapsulate"><a href='../../mlr3/html/Learner.html#method-Learner-encapsulate'><code>mlr3::Learner$encapsulate()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="help"><a href='../../mlr3/html/Learner.html#method-Learner-help'><code>mlr3::Learner$help()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="predict"><a href='../../mlr3/html/Learner.html#method-Learner-predict'><code>mlr3::Learner$predict()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="predict_newdata"><a href='../../mlr3/html/Learner.html#method-Learner-predict_newdata'><code>mlr3::Learner$predict_newdata()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="reset"><a href='../../mlr3/html/Learner.html#method-Learner-reset'><code>mlr3::Learner$reset()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="selected_features"><a href='../../mlr3/html/Learner.html#method-Learner-selected_features'><code>mlr3::Learner$selected_features()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="train"><a href='../../mlr3/html/Learner.html#method-Learner-train'><code>mlr3::Learner$train()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="base_learner"><a href='../../mlr3/html/Learner.html#method-Learner-base_learner'><code>mlr3::Learner$base_learner()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="configure"><a href='../../mlr3/html/Learner.html#method-Learner-configure'><code>mlr3::Learner$configure()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="encapsulate"><a href='../../mlr3/html/Learner.html#method-Learner-encapsulate'><code>mlr3::Learner$encapsulate()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="help"><a href='../../mlr3/html/Learner.html#method-Learner-help'><code>mlr3::Learner$help()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="predict"><a href='../../mlr3/html/Learner.html#method-Learner-predict'><code>mlr3::Learner$predict()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="predict_newdata"><a href='../../mlr3/html/Learner.html#method-Learner-predict_newdata'><code>mlr3::Learner$predict_newdata()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="reset"><a href='../../mlr3/html/Learner.html#method-Learner-reset'><code>mlr3::Learner$reset()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="selected_features"><a href='../../mlr3/html/Learner.html#method-Learner-selected_features'><code>mlr3::Learner$selected_features()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3" data-topic="Learner" data-id="train"><a href='../../mlr3/html/Learner.html#method-Learner-train'><code>mlr3::Learner$train()</code></a></span></li>
 </ul>
-</details>
-}}
+</details>}}
 \if{html}{\out{<hr>}}
-\if{html}{\out{<a id="method-LearnerTorch-new"></a>}}
-\if{latex}{\out{\hypertarget{method-LearnerTorch-new}{}}}
-\subsection{Method \code{new()}}{
-Creates a new instance of this \link[R6:R6Class]{R6} class.
-\subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{LearnerTorch$new(
+\if{html}{\out{<a id="method-LearnerTorch-initialize"></a>}}
+\if{latex}{\out{\hypertarget{method-LearnerTorch-initialize}{}}}
+\subsection{\code{LearnerTorch$new()}}{
+  Creates a new instance of this \link[R6:R6Class]{R6} class.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{LearnerTorch$new(
   id,
   task_type,
   param_set,
@@ -365,181 +609,189 @@ Creates a new instance of this \link[R6:R6Class]{R6} class.
   predict_types = NULL,
   callbacks = list(),
   jittable = FALSE
-)}\if{html}{\out{</div>}}
-}
-
-\subsection{Arguments}{
-\if{html}{\out{<div class="arguments">}}
-\describe{
-\item{\code{id}}{(\code{character(1)})\cr
+)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{id}}{(\code{character(1)})\cr
 The id for of the new object.}
-
-\item{\code{task_type}}{(\code{character(1)})\cr
+      \item{\code{task_type}}{(\code{character(1)})\cr
 The task type.}
-
-\item{\code{param_set}}{(\code{\link[paradox:ParamSet]{ParamSet}} or \code{alist()})\cr
+      \item{\code{param_set}}{(\code{\link[paradox:ParamSet]{ParamSet}} or \code{alist()})\cr
 Either a parameter set, or an \code{alist()} containing different values of self,
 e.g. \code{alist(private$.param_set1, private$.param_set2)}, from which a \code{\link[paradox:ParamSet]{ParamSet}} collection
 should be created.}
-
-\item{\code{properties}}{(\code{character()})\cr
+      \item{\code{properties}}{(\code{character()})\cr
 The properties of the object.
 See \code{\link[mlr3:mlr_reflections]{mlr_reflections$learner_properties}} for available values.}
-
-\item{\code{man}}{(\code{character(1)})\cr
+      \item{\code{man}}{(\code{character(1)})\cr
 String in the format \verb{[pkg]::[topic]} pointing to a manual page for this object.
 The referenced help package can be opened via method \verb{$help()}.}
-
-\item{\code{label}}{(\code{character(1)})\cr
+      \item{\code{label}}{(\code{character(1)})\cr
 Label for the new instance.}
-
-\item{\code{feature_types}}{(\code{character()})\cr
+      \item{\code{feature_types}}{(\code{character()})\cr
 The feature types.
 See \code{\link[mlr3:mlr_reflections]{mlr_reflections$task_feature_types}} for available values,
 Additionally, \code{"lazy_tensor"} is supported.}
-
-\item{\code{optimizer}}{(\code{NULL} or \code{\link{TorchOptimizer}})\cr
+      \item{\code{optimizer}}{(\code{NULL} or \code{\link{TorchOptimizer}})\cr
 The optimizer to use for training.
 Defaults to adam.}
-
-\item{\code{loss}}{(\code{NULL} or \code{\link{TorchLoss}})\cr
+      \item{\code{loss}}{(\code{NULL} or \code{\link{TorchLoss}})\cr
 The loss to use for training.
-Defaults to MSE for regression and cross entropy for classification.}
-
-\item{\code{packages}}{(\code{character()})\cr
+Defaults to the loss registered for the task type in \code{mlr_reflections$torch$default_losses},
+which is MSE for regression and cross entropy for classification.
+For other task types there is no default unless one is registered, and the loss has to be given,
+because which loss is appropriate depends on the learning problem.}
+      \item{\code{packages}}{(\code{character()})\cr
 The R packages this object depends on.}
-
-\item{\code{predict_types}}{(\code{character()})\cr
+      \item{\code{predict_types}}{(\code{character()})\cr
 The predict types.
 See \code{\link[mlr3:mlr_reflections]{mlr_reflections$learner_predict_types}} for available values.
 For regression, the default is \code{"response"}.
 For classification, this defaults to \code{"response"} and \code{"prob"}.
+For the task type \code{"torch"}, it defaults to \code{"response"}.
+For other task types, it defaults to all predict types that are registered for the task type.
 To deviate from the defaults, it is necessary to overwrite the private \verb{$.encode_prediction()}
 method, see section \emph{Inheriting}.}
-
-\item{\code{callbacks}}{(\code{list()} of \code{\link{TorchCallback}}s)\cr
+      \item{\code{callbacks}}{(\code{list()} of \code{\link{TorchCallback}}s)\cr
 The callbacks to use for training.
-Defaults to an empty\code{ list()}, i.e. no callbacks.}
-
-\item{\code{jittable}}{(\code{logical(1)})\cr
+Defaults to an empty\code{ list()}, i.e. no callbacks.
+Within a stage they are called in the order in which they are provided, unless a callback
+requests otherwise via its \verb{$weight}, see section \emph{Ordering} of \code{\link{CallbackSet}}.}
+      \item{\code{jittable}}{(\code{logical(1)})\cr
 Whether the model can be jit-traced. Default is \code{FALSE}.}
+    }
+    \if{html}{\out{</div>}}
+  }
 }
-\if{html}{\out{</div>}}
-}
-}
+
 \if{html}{\out{<hr>}}
 \if{html}{\out{<a id="method-LearnerTorch-format"></a>}}
 \if{latex}{\out{\hypertarget{method-LearnerTorch-format}{}}}
-\subsection{Method \code{format()}}{
-Helper for print outputs.
-\subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{LearnerTorch$format(...)}\if{html}{\out{</div>}}
+\subsection{\code{LearnerTorch$format()}}{
+  Helper for print outputs.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{LearnerTorch$format(...)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{...}}{(ignored).}
+    }
+    \if{html}{\out{</div>}}
+  }
 }
 
-\subsection{Arguments}{
-\if{html}{\out{<div class="arguments">}}
-\describe{
-\item{\code{...}}{(ignored).}
-}
-\if{html}{\out{</div>}}
-}
-}
 \if{html}{\out{<hr>}}
 \if{html}{\out{<a id="method-LearnerTorch-print"></a>}}
 \if{latex}{\out{\hypertarget{method-LearnerTorch-print}{}}}
-\subsection{Method \code{print()}}{
-Prints the object.
-\subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{LearnerTorch$print(...)}\if{html}{\out{</div>}}
+\subsection{\code{LearnerTorch$print()}}{
+  Prints the object.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{LearnerTorch$print(...)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{...}}{(any)\cr
+Currently unused.}
+    }
+    \if{html}{\out{</div>}}
+  }
 }
 
-\subsection{Arguments}{
-\if{html}{\out{<div class="arguments">}}
-\describe{
-\item{\code{...}}{(any)\cr
-Currently unused.}
-}
-\if{html}{\out{</div>}}
-}
-}
 \if{html}{\out{<hr>}}
 \if{html}{\out{<a id="method-LearnerTorch-marshal"></a>}}
 \if{latex}{\out{\hypertarget{method-LearnerTorch-marshal}{}}}
-\subsection{Method \code{marshal()}}{
-Marshal the learner.
-\subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{LearnerTorch$marshal(...)}\if{html}{\out{</div>}}
+\subsection{\code{LearnerTorch$marshal()}}{
+  Marshal the learner.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{LearnerTorch$marshal(...)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{...}}{(any)\cr
+Additional parameters.}
+    }
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Returns}{
+    self
+  }
 }
 
-\subsection{Arguments}{
-\if{html}{\out{<div class="arguments">}}
-\describe{
-\item{\code{...}}{(any)\cr
-Additional parameters.}
-}
-\if{html}{\out{</div>}}
-}
-\subsection{Returns}{
-self
-}
-}
 \if{html}{\out{<hr>}}
 \if{html}{\out{<a id="method-LearnerTorch-unmarshal"></a>}}
 \if{latex}{\out{\hypertarget{method-LearnerTorch-unmarshal}{}}}
-\subsection{Method \code{unmarshal()}}{
-Unmarshal the learner.
-\subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{LearnerTorch$unmarshal(...)}\if{html}{\out{</div>}}
+\subsection{\code{LearnerTorch$unmarshal()}}{
+  Unmarshal the learner.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{LearnerTorch$unmarshal(...)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{...}}{(any)\cr
+Additional parameters.}
+    }
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Returns}{
+    self
+  }
 }
 
-\subsection{Arguments}{
-\if{html}{\out{<div class="arguments">}}
-\describe{
-\item{\code{...}}{(any)\cr
-Additional parameters.}
-}
-\if{html}{\out{</div>}}
-}
-\subsection{Returns}{
-self
-}
-}
 \if{html}{\out{<hr>}}
 \if{html}{\out{<a id="method-LearnerTorch-dataset"></a>}}
 \if{latex}{\out{\hypertarget{method-LearnerTorch-dataset}{}}}
-\subsection{Method \code{dataset()}}{
-Create the dataset for a task.
-\subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{LearnerTorch$dataset(task)}\if{html}{\out{</div>}}
+\subsection{\code{LearnerTorch$dataset()}}{
+  Create the dataset for a task.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{LearnerTorch$dataset(task)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{task}}{\code{\link[mlr3:Task]{Task}}\cr
+The task}
+    }
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Returns}{
+    \code{\link[torch:dataset]{dataset}}
+  }
 }
 
-\subsection{Arguments}{
-\if{html}{\out{<div class="arguments">}}
-\describe{
-\item{\code{task}}{\code{\link[mlr3:Task]{Task}}\cr
-The task}
-}
-\if{html}{\out{</div>}}
-}
-\subsection{Returns}{
-\code{\link[torch:dataset]{dataset}}
-}
-}
 \if{html}{\out{<hr>}}
 \if{html}{\out{<a id="method-LearnerTorch-clone"></a>}}
 \if{latex}{\out{\hypertarget{method-LearnerTorch-clone}{}}}
-\subsection{Method \code{clone()}}{
-The objects of this class are cloneable with this method.
-\subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{LearnerTorch$clone(deep = FALSE)}\if{html}{\out{</div>}}
+\subsection{\code{LearnerTorch$clone()}}{
+  The objects of this class are cloneable with this method.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{LearnerTorch$clone(deep = FALSE)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{deep}}{Whether to make a deep clone.}
+    }
+    \if{html}{\out{</div>}}
+  }
 }
 
-\subsection{Arguments}{
-\if{html}{\out{<div class="arguments">}}
-\describe{
-\item{\code{deep}}{Whether to make a deep clone.}
-}
-\if{html}{\out{</div>}}
-}
-}
 }

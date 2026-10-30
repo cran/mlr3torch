@@ -250,9 +250,9 @@ test_that("merging of graphs behaves as expected", {
   e = new.env()
   e$a = 0
   fn = crate(function(x) {
-    a <<- a + 1
+    e$a = e$a + 1
     x
-  }, .parent = e)
+  }, e)
   graph = pipeop_preproc_torch("trafo_counter", fn = fn)$new() %>>%
     list(
       po("renamecolumns", renaming = c(x = "x1"), id = "a1") %>>% po("trafo_nop", id = "nop1"),
@@ -346,7 +346,7 @@ test_that("unmergeable graphs are handled correctly", {
   task_ds = task_dataset(task, c(i1, i2))
 
   batch = task_ds$.getbatch(1)
-  expect_equal(batch$x[[1]], batch$x[[2]] - 1)
+  expect_equal(batch$x[[1]], batch$x[[2]] - 1L)
 })
 
 test_that("merge_lazy_tensors only returns modified columns", {
@@ -475,4 +475,122 @@ test_that("ensure that mlr3 ensures that positive class is the first level", {
   expect_equal(levels(task$truth())[1L], "M")
   task$positive = "R"
   expect_equal(levels(task$truth())[1L], "R")
+})
+
+test_that("batchgetter_categ encodes all categorical types with 1-based codes", {
+  # `as.integer()` maps logicals to 0/1, which is not a valid index into R torch's
+  # 1-based `nn_embedding()`. All categorical feature types must be encoded uniformly
+  # as 1, ..., cardinality.
+  d = data.frame(
+    f = factor(c("x", "y", "x")),
+    o = ordered(c("lo", "hi", "lo"), levels = c("lo", "hi")),
+    lg = c(TRUE, FALSE, TRUE)
+  )
+  tensor = batchgetter_categ(data.table::as.data.table(d))
+  expect_equal(tensor$dtype, torch_long())
+  expect_equal(as.matrix(tensor), matrix(c(1L, 2L, 1L, 1L, 2L, 1L, 2L, 1L, 2L), ncol = 3))
+  # FALSE -> 1 and TRUE -> 2, i.e. the level order of factor(c(FALSE, TRUE))
+  expect_true(all(as.matrix(tensor) >= 1L))
+})
+
+test_that("categ_cardinalities handles logicals and follows the ingress column order", {
+  d = data.frame(
+    y = factor(rep(c("a", "b"), 5)),
+    num = as.numeric(1:10),
+    lg = rep(c(TRUE, FALSE), 5),
+    f = factor(rep(c("x", "y", "z", "x", "y"), 2))
+  )
+  task = mlr3::as_task_classif(d, target = "y")
+  # Task$levels() returns NULL for logicals, so a naive lengths() would give 0 here.
+  # The order follows ingress_categ(), i.e. the order of Task$feature_types.
+  expect_equal(categ_cardinalities(task), c(f = 3L, lg = 2L))
+
+  # the order must follow ingress_categ(), which is not always task$feature_names order
+  scaled = mlr3pipelines::po("scale",
+    affect_columns = mlr3pipelines::selector_type(c("integer", "numeric")))$train(list(task))[[1L]]
+  expect_equal(names(categ_cardinalities(scaled)), ingress_categ()$features(scaled))
+
+  # a task without categorical features yields an empty integer vector, not an error
+  expect_equal(categ_cardinalities(mlr3::tsk("iris")), integer(0))
+})
+
+test_that("get_batch_constructor() default reproduces the ingress/target split", {
+  task = tsk("iris")
+  token = TorchIngressToken(task$feature_names, batchgetter_num, c(NA, 4))
+  token$features = token$features(task)
+  batch_constructor = get_batch_constructor(
+    task,
+    feature_ingress_tokens = list(input = token),
+    target_batchgetter = get_target_batchgetter(task)
+  )
+  batch = batch_constructor(data = task$data(rows = 1:3), cache = NULL)
+  expect_names(names(batch), permutation.of = c("x", "y"))
+  expect_equal(batch$x$input$shape, c(3L, 4L))
+  expect_equal(as.integer(batch$y), as.integer(task$truth(1:3)))
+
+  # no target batchgetter means no target in the batch
+  batch_constructor = get_batch_constructor(task, feature_ingress_tokens = list(input = token))
+  batch = batch_constructor(data = task$data(rows = 1:3), cache = NULL)
+  expect_null(batch$y)
+})
+test_that("task_dataset can retrieve the task data once and take the batches from it", {
+  task = tsk("iris")$filter(c(150:101, 1:20))
+  make_dataset = function(cache_data) {
+    task_dataset(task, list(x = ingress_num()), get_target_batchgetter(task), cache_data = cache_data)
+  }
+  ds = make_dataset(TRUE)
+  expect_data_table(ds$data, nrows = 70L)
+  ds_nocache = make_dataset(FALSE)
+  expect_null(ds_nocache$data)
+
+  index = c(3L, 70L, 1L, 25L)
+  batch = ds$.getbatch(index)
+  expect_equal(batch, ds_nocache$.getbatch(index))
+  features = as.matrix(task$data(rows = task$row_ids[index], cols = task$feature_names))
+  expect_equal(as_array(batch$x$x), unname(features), tolerance = 1e-6)
+})
+
+test_that("learners pass cache_task_data to task_dataset", {
+  learner = lrn("classif.mlp", batch_size = 16, epochs = 1)
+  expect_true(learner$param_set$values$cache_task_data)
+  task = tsk("iris")
+  for (cache in c(TRUE, FALSE)) {
+    learner$param_set$set_values(cache_task_data = cache)
+    ds = get_private(learner)$.dataset(task, learner$param_set$get_values(tags = "train"))
+    expect_equal(is.null(ds$data), !cache)
+  }
+})
+
+test_that("the featureless learner passes cache_task_data to its dataset", {
+  learner = lrn("classif.torch_featureless", batch_size = 16, epochs = 1)
+  task = tsk("iris")$filter(c(150:101, 1:20))
+  index = c(3L, 70L, 1L)
+  batches = lapply(c(TRUE, FALSE), function(cache) {
+    learner$param_set$set_values(cache_task_data = cache)
+    ds = get_private(learner)$.dataset(task, learner$param_set$get_values(tags = "train"))
+    expect_equal(is.null(ds$target), !cache)
+    ds$.getbatch(index)
+  })
+  expect_equal(batches[[1L]], batches[[2L]])
+  expect_equal(as.integer(batches[[1L]]$y), as.integer(task$truth(task$row_ids[index])))
+})
+
+test_that("task_dataset errs for a lazy tensor column whose elements have different DataDescriptors", {
+  x = torch_randn(3, 2)
+  lt1 = as_lazy_tensor(x)
+  lt2 = as_lazy_tensor(torch_randn(3, 2))
+  ingress = list(x = TorchIngressToken("x", batchgetter_lazy_tensor, c(NA, 2)))
+
+  # rbind() of data.tables and task$rbind() do not use c(), which checks this
+  task = as_task_regr(rbind(data.table(x = lt1, y = 1:3), data.table(x = lt2, y = 4:6)), target = "y")
+  expect_error(task_dataset(task, ingress), "Lazy tensor column 'x' contains elements of different DataDescriptors")
+  task = as_task_regr(data.table(x = lt1, y = 1:3), target = "y")
+  task$rbind(data.table(x = lt2, y = 4:6))
+  expect_error(task_dataset(task, ingress), "different DataDescriptors")
+
+  # different DataDescriptor objects that describe the same data are fine, as for c()
+  lt3 = lazy_tensor(dd(lt1)$clone(deep = TRUE))
+  expect_class(c(lt1, lt3), "lazy_tensor")
+  task = as_task_regr(rbind(data.table(x = lt1, y = 1:3), data.table(x = lt3, y = 4:6)), target = "y")
+  expect_class(task_dataset(task, ingress), "task_dataset")
 })

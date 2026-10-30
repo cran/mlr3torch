@@ -16,11 +16,16 @@
 #' @template param_loss
 #' @template param_callbacks
 #' @template param_packages
+#' @template param_predict_types
+#' @template param_target_batchgetter
 #' @param feature_types (`NULL` or `character()`)\cr
 #'   The feature types. Defaults to all available feature types.
 #' @param properties (`NULL` or `character()`)\cr
 #'   The properties of the learner.
-#'   Defaults to all available properties for the given task type.
+#'   Defaults to the properties that every [`LearnerTorch`] has, i.e. `"marshal"`, `"validation"` and
+#'   `"internal_tuning"` (and `"twoclass"` and `"multiclass"` for classification).
+#'   Other properties such as `"weights"`, `"missings"`, `"new_levels"` or `"offset"` must only be
+#'   claimed if the network and the ingress tokens handle them, as mlr3 then skips its checks for them.
 #' @section Parameters: See [`LearnerTorch`]
 #' @family Learner
 #' @family Graph Network
@@ -59,9 +64,15 @@ LearnerTorchModel = R6Class("LearnerTorchModel",
     #' @description
     #' Creates a new instance of this [R6][R6::R6Class] class.
     initialize = function(network = NULL, ingress_tokens = NULL, task_type, properties = NULL, optimizer = NULL, loss = NULL,
-      callbacks = list(), packages = character(0), feature_types = NULL) {
+      callbacks = list(), packages = character(0), feature_types = NULL, target_batchgetter = NULL,
+      predict_types = NULL) {
+      private$.target_batchgetter = assert_function(target_batchgetter, args = "data", null.ok = TRUE)
       # we need to serialize here as otherwise encapsulation and parallelization fails
-      if (!is.null(network)) private$.network_stored = torch_serialize(assert_class(network, "nn_module"))
+      if (!is.null(network)) {
+        private$.network_stored = torch_serialize(assert_class(network, "nn_module"))
+        # comute this once so hash does not change after training
+        private$.network_hash = calculate_hash(private$.network_stored)
+      }
       if (!is.null(ingress_tokens)) self$ingress_tokens = ingress_tokens
       if (is.null(feature_types)) {
         feature_types = unname(mlr_reflections$task_feature_types)
@@ -69,7 +80,12 @@ LearnerTorchModel = R6Class("LearnerTorchModel",
         assert_subset(feature_types, mlr_reflections$task_feature_types)
       }
       if (is.null(properties)) {
-        properties = mlr_reflections$learner_properties[[task_type]]
+        # Only the properties that `LearnerTorch` adds itself are claimed by default. The others are
+        # not implemented: e.g. the ingress operators encode factors by their level codes and cannot
+        # handle missing values, weights and offsets are not passed to the loss, and there is no
+        # `$importance()` method. Claiming them would turn off mlr3's checks for them, e.g. that the
+        # predict task has the factor levels of the train task.
+        properties = character()
       } else {
         properties = assert_subset(properties, mlr_reflections$learner_properties[[task_type]])
       }
@@ -83,9 +99,10 @@ LearnerTorchModel = R6Class("LearnerTorchModel",
         properties = properties,
         packages = packages,
         param_set = ps(),
+        predict_types = predict_types,
         feature_types = feature_types,
         jittable = TRUE,
-        man = "mlr3torch::mlr_learners.torch_model"
+        man = "mlr3torch::mlr_learners_torch_model"
       )
     }
   ),
@@ -120,6 +137,15 @@ LearnerTorchModel = R6Class("LearnerTorchModel",
         torch_load(private$.network_stored)
       }
       private$.network_stored = NULL
+      if (isTRUE(private$.reset_parameters_)) {
+        # `PipeOpTorch` operators build their modules while the *Graph* trains, which happens before
+        # `LearnerTorch$.train()` sets the torch seed, so the weights of a graph-built network are
+        # drawn outside the seeded region and such a learner is not reproducible from `seed` alone.
+        # `.network()` runs inside that region, so re-initializing here puts the initialization back
+        # under the seed. Only `PipeOpTorchModel` sets this; a network handed to `LearnerTorchModel`
+        # directly is left alone, as its weights may be the point (e.g. a pretrained model).
+        network$reset_parameters()
+      }
       network
     },
     .dataset = function(task, param_vals) {
@@ -130,16 +156,23 @@ LearnerTorchModel = R6Class("LearnerTorchModel",
       dataset = task_dataset(
         task,
         feature_ingress_tokens = ingress_tokens,
-        target_batchgetter = get_target_batchgetter(task)
+        target_batchgetter = private$.target_batchgetter %??% get_target_batchgetter(task),
+        cache_data = param_vals$cache_task_data %??% TRUE
       )
     },
+    .target_batchgetter = NULL,
     .network_stored = NULL,
+    .network_hash = NULL,
+    # set by `PipeOpTorchModel`, see `.network()` above
+    .reset_parameters_ = FALSE,
     .additional_phash_input = function() {
-      list(self$properties, self$feature_types, private$.network_stored, self$packages, private$.ingress_tokens)
+      list(self$properties, self$feature_types, self$predict_types, private$.network_hash,
+        self$packages, private$.ingress_tokens_, private$.target_batchgetter)
      }
   )
 )
 
-#' @include PipeOpTorchIngress.R task_dataset.R
+#' @include PipeOpTorchIngress.R task_dataset.R TorchLoss.R
 register_learner("classif.torch_model", LearnerTorchModel)
 register_learner("regr.torch_model", LearnerTorchModel)
+register_learner("torch.model", LearnerTorchModel, loss = loss_placeholder())

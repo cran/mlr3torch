@@ -14,7 +14,7 @@
 #'
 #' CIFAR-10 contains 10 classes. CIFAR-100 contains 100 classes, which may be partitioned into 20 superclasses of 5 classes each.
 #' The CIFAR-10 and CIFAR-100 classes are mutually exclusive.
-#' See Chapter 3.1 of [the technical report](https://www.cs.toronto.edu/~kriz/learning-features-2009-TR.pdf) for more details.
+#' See Chapter 3.1 of [the technical report](https://cave.cs.toronto.edu/kriz/learning-features-2009-TR.pdf) for more details.
 #'
 #' The data is obtained from [`torchvision::cifar10_dataset()`] (or `torchvision::cifar100_dataset()`).
 #'
@@ -52,7 +52,26 @@ cifar_ds_generator = torch::dataset(
   }
 )
 
+# Timeout (in seconds) for downloading the CIFAR archives.
+# The default is deliberately generous: the slowest rate observed on CI was ~41 kB/s, at which
+# the ~170 MB archive needs roughly 4100s, so 5400s leaves about 30% headroom. It can be raised
+# without a code change via `options(mlr3torch.cifar_download_timeout = <seconds>)`.
+get_cifar_download_timeout = function() {
+  timeout = getOption("mlr3torch.cifar_download_timeout", 5400L)
+  assert_int(timeout, lower = 1L, coerce = TRUE)
+}
+
 constructor_cifar = function(path, type = 10) {
+  # The CIFAR archives are served from cs.toronto.edu, which is frequently throttled: rates
+  # around 40 kB/s have been observed, i.e. well over an hour for the ~170 MB archive. R's
+  # default timeout is 60s and `torchvision` only raises it to a 600s floor via
+  # `max(600, getOption("timeout"))`, so the download is aborted long before it completes.
+  #
+  # The timeout is raised only around this download, rather than globally, so that other
+  # downloads still fail fast instead of hanging. The cost is paid once: the result is cached
+  # (see `cached()`), so subsequent calls do not download anything.
+  withr::local_options(timeout = max(getOption("timeout"), get_cifar_download_timeout()))
+
   if (type == 10) {
     d_train = torchvision::cifar10_dataset(root = path, train = TRUE, download = TRUE)
     d_test = torchvision::cifar10_dataset(root = path, train = FALSE, download = FALSE)

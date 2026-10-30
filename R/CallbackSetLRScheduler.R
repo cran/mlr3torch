@@ -15,6 +15,17 @@
 #' * [torch::lr_step()]
 #' * Custom schedulers defined with [torch::lr_scheduler()].
 #'
+#' @section Resuming:
+#' The state of the wrapped `torch` scheduler is stored and restored, so a resumed run continues the
+#' schedule instead of starting it over.
+#' Creating a scheduler resets the optimizer's learning rate to the one the schedule started at, so
+#' the rate the restored schedule had reached is put back afterwards.
+#'
+#' That state contains the scheduler's configuration as well as its progress, and restoring it
+#' overwrites what the resuming run was configured with.
+#' Resuming with different scheduler arguments, or a different `opt.lr`, which the schedule's base
+#' rates are derived from, therefore silently continues the schedule of the checkpointed run.
+#'
 #' @param .scheduler (`lr_scheduler_generator`)\cr
 #'   The `torch` scheduler generator (e.g. `torch::lr_step`).
 #' @param ... (any)\cr
@@ -51,11 +62,55 @@ CallbackSetLRScheduler = R6Class("CallbackSetLRScheduler",
     #' @description
     #' Creates the scheduler using the optimizer from the context
     on_begin = function() {
+      groups = lapply(self$ctx$optimizer$param_groups, function(group) group[names(group) != "params"])
       self$scheduler = invoke(self$scheduler_fn, optimizer = self$ctx$optimizer, .args = private$.scheduler_args)
+      # initializing a scheduler also modifies the optimizer's param_group values to certain values
+      # (the ones from the beginning of the schedule); Here, we basically forward the state of the
+      # param groups to where they were when the checkpoint which we are resuming was written.
+      if (!is.null(private$.prev_state)) {
+        private$.restore_scheduler_state(groups)
+      }
+    },
+    #' @description
+    #' Returns the state of the wrapped `torch` scheduler, so that a later run can continue the
+    #' schedule instead of starting it over.
+    #' Returns `NULL` if the scheduler was not created yet, i.e. before the training loop began.
+    state_dict = function() {
+      if (!is.null(self$scheduler)) self$scheduler$state_dict()
+    },
+    #' @description
+    #' Loads the state of the wrapped `torch` scheduler.
+    #' @param state_dict (named `list()`)\cr
+    #'   The state dict as retrieved via `$state_dict()`.
+    load_state_dict = function(state_dict) {
+      # the scheduler only exists once the training loop has begun, so the state is applied in
+      # $on_begin() and merely remembered here
+      private$.prev_state = state_dict
+      if (!is.null(self$scheduler)) private$.restore_scheduler_state()
+      invisible(NULL)
     }
   ),
   private = list(
-    .scheduler_args = NULL
+    .scheduler_args = NULL,
+    .prev_state = NULL,
+    .restore_scheduler_state = function(groups = NULL) {
+      if (is.null(private$.prev_state)) stop("internal error")
+      # the state dict of the freshly created scheduler describes the schedule this run is
+      # configured for, which is not necessarily the one the state was saved for
+      private$.assert_compatible_state(self$scheduler$state_dict(), private$.prev_state)
+      self$scheduler$load_state_dict(private$.prev_state)
+      if (!is.null(groups)) {
+        walk(seq_along(groups), function(i) {
+          walk(names(groups[[i]]), function(nm) {
+            self$ctx$optimizer$param_groups[[i]][[nm]] = groups[[i]][[nm]]
+          })
+        })
+      }
+      private$.prev_state = NULL
+    },
+    # Schedulers whose shape depends on the length of the training run overwrite this to fail
+    # before the first epoch instead of somewhere in the middle of the run.
+    .assert_compatible_state = function(current, restored) NULL
   )
 )
 
@@ -67,6 +122,13 @@ CallbackSetLRScheduler = R6Class("CallbackSetLRScheduler",
 #' Changes the learning rate based on the 1cycle learning rate policy.
 #'
 #' Wraps [torch::lr_one_cycle()], where the default values for `epochs` and `steps_per_epoch` are the number of training epochs and the number of batches per epoch.
+#'
+#' @section Resuming:
+#' As for [`CallbackSetLRScheduler`], with one additional restriction: the 1cycle policy is defined
+#' over the total number of steps of the run, so a resumed run must be configured for the same
+#' number of steps as the one that wrote the checkpoint, i.e. the same `epochs` and the same number
+#' of batches per epoch.
+#' A run that is not errors before its first epoch rather than somewhere in the middle.
 #'
 #' @param ... (any)\cr
 #'   The scheduler-specific initialization arguments.
@@ -93,7 +155,20 @@ CallbackSetLRSchedulerOneCycle = R6Class("CallbackSetLRSchedulerOneCycle",
         list(epochs = self$ctx$total_epochs, steps_per_epoch = self$ctx$loader_train$.length())
       )
 
-      self$scheduler = invoke(self$scheduler_fn, optimizer = self$ctx$optimizer, .args = private$.scheduler_args)
+      super$on_begin()
+    }
+  ),
+  private = list(
+    # The one cycle policy is defined over the total number of steps, so a restored state is only
+    # meaningful when this run has the same length as the one the state was saved in.
+    # Without this check, torch errors in the middle of the run ("Tried to step ... times") or the
+    # cycle silently never finishes annealing.
+    .assert_compatible_state = function(current, restored) {
+      if (isTRUE(all.equal(restored$total_steps, current$total_steps))) {
+        return(NULL)
+      }
+      stopf("Cannot load the state of the one cycle learning rate schedule: it was saved for a schedule of %s total steps, but this run is configured for %s (epochs = %s). Both runs must be configured with the same 'epochs' and yield the same number of batches per epoch.", # nolint
+        format(restored$total_steps %??% NA), format(current$total_steps), self$ctx$total_epochs)
     }
   )
 )
@@ -103,8 +178,24 @@ CallbackSetLRSchedulerOneCycle = R6Class("CallbackSetLRSchedulerOneCycle",
 #' @name mlr_callback_set.lr_scheduler_reduce_on_plateau
 #'
 #' @description
-#' Reduces the learning rate when the first validation metric stops improving for `patience` epochs.
-#' Wraps [torch::lr_reduce_on_plateau()]
+#' Reduces the learning rate when the first validation measure, i.e. the first entry of the
+#' learner's `measures_valid`, stops improving for `patience` evaluation steps.
+#' Wraps [torch::lr_reduce_on_plateau()].
+#'
+#' Note that `patience` counts *evaluation steps*, not epochs: when the learner's `eval_freq` is
+#' greater than `1`, the scheduler only steps in the epochs in which the validation measures are
+#' evaluated, so `patience` evaluation steps correspond to `patience * eval_freq` epochs.
+#'
+#' Unless `mode` is set, it is derived from the measure: `"min"` if the measure is minimized and
+#' `"max"` if it is maximized. Training fails when `mode` contradicts the measure.
+#' When the learner has no validation measure, e.g. in the final fit of an
+#' [`AutoTuner`][mlr3tuning::AutoTuner] that tunes the epochs internally, a warning is given and
+#' the learning rate is not reduced.
+#'
+#' @section Resuming:
+#' As for [`CallbackSetLRScheduler`]. For this schedule the restored state includes the best score
+#' seen so far and how long it has been stagnating, so `patience` keeps counting across runs instead
+#' of starting over.
 #'
 #' @param ... (any)\cr
 #'   The scheduler-specific initialization arguments.
@@ -124,8 +215,41 @@ CallbackSetLRSchedulerReduceOnPlateau = R6Class("CallbackSetLRSchedulerReduceOnP
       )
 
       self$on_epoch_end = function() {
-        self$scheduler$step(self$ctx$last_scores_valid[[1L]])
+        # `last_scores_valid` is NULL in epochs where no validation is performed
+        # (i.e. when `eval_freq > 1`).
+        scores = self$ctx$last_scores_valid
+        if (!length(scores)) {
+          return(NULL)
+        }
+        self$scheduler$step(scores[[1L]])
       }
+    },
+    #' @description
+    #' Creates the scheduler using the optimizer from the context, with the `mode` that fits the
+    #' first validation measure.
+    on_begin = function() {
+      # without a validation measure the scheduler never steps. This is not an error, as it also happens in the
+      # final fit of an AutoTuner that tunes the epochs internally, which trains without validation.
+      if (!length(self$ctx$measures_valid)) {
+        warningf("The learning rate scheduler 'lr_reduce_on_plateau' steps on the first validation measure, but the learner '%s' has no 'measures_valid', so the learning rate is not reduced.", # nolint
+          self$ctx$learner$id)
+        return(super$on_begin())
+      }
+      # torch's default `mode` of "min" would reduce the learning rate while a measure that is maximized still improves
+      measure = self$ctx$measures_valid[[1L]]
+      mode = if (isTRUE(measure$minimize)) "min" else if (isFALSE(measure$minimize)) "max"
+      if (is.null(private$.scheduler_args$mode)) {
+        if (is.null(mode)) {
+          stopf("The learning rate scheduler 'lr_reduce_on_plateau' cannot derive its 'mode' from the validation measure '%s', which has minimize = NA. Set 'mode' explicitly.", # nolint
+            measure$id)
+        }
+        private$.scheduler_args$mode = mode
+      } else if (!is.null(mode) && private$.scheduler_args$mode != mode) {
+        stopf("The learning rate scheduler 'lr_reduce_on_plateau' has mode '%s', but the validation measure '%s' it steps on is %s. Set 'mode' to '%s' or leave it unset.", # nolint
+          private$.scheduler_args$mode, measure$id, if (mode == "min") "minimized" else "maximized", mode)
+      }
+
+      super$on_begin()
     }
   )
 )
@@ -205,7 +329,7 @@ mlr3torch_callbacks$add("lr_one_cycle", function() {
     ),
     id = "lr_one_cycle",
     label = "1cycle LR Scheduler",
-    man = "mlr3torch::mlr_callback_set.lr_scheduler"
+    man = "mlr3torch::mlr_callback_set.lr_scheduler_one_cycle"
   )
 })
 
@@ -214,7 +338,8 @@ mlr3torch_callbacks$add("lr_reduce_on_plateau", function() {
   TorchCallback$new(
     callback_generator = CallbackSetLRSchedulerReduceOnPlateau,
     param_set = ps(
-      mode = p_fct(default = "min", levels = c("min", "max"), tags = "train"),
+      # no default: unless it is set, the mode is derived from the first validation measure
+      mode = p_fct(levels = c("min", "max"), tags = "train"),
       factor = p_dbl(default = 0.1, tags = "train"),
       patience = p_int(default = 10, tags = "train"),
       threshold = p_dbl(default = 1e-04, tags = "train"),
@@ -226,7 +351,7 @@ mlr3torch_callbacks$add("lr_reduce_on_plateau", function() {
     ),
     id = "lr_reduce_on_plateau",
     label = "Reduce on Plateau LR Scheduler",
-    man = "mlr3torch::mlr_callback_set.lr_scheduler"
+    man = "mlr3torch::mlr_callback_set.lr_scheduler_reduce_on_plateau"
   )
 })
 

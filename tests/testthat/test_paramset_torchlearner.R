@@ -23,6 +23,12 @@ test_that("paramset works", {
 
 
   expect_error({param_set_regr$values$device = "opengl"}, regexp = NA) # nolint
+  expect_error(param_set_regr$set_values(device = "cuda:0"), regexp = NA)
+  expect_error(param_set_regr$set_values(device = "cuda:12"), regexp = NA)
+  expect_error(param_set_regr$set_values(device = "auto:0"), regexp = "Must be one of")
+  expect_error(param_set_regr$set_values(device = "cuda:"), regexp = "Must be one of")
+  expect_error(param_set_regr$set_values(device = "gpu"), regexp = "Must be one of")
+  expect_error(param_set_regr$set_values(device = c("cpu", "cuda")), regexp = "length 1")
 })
 
 test_that("make_check_measures works", {
@@ -46,4 +52,34 @@ test_that("make_check_measures works", {
   expect_grepl_classif(msrs(c("oob_error")), "require a learner or model")
   # has property "requires_learner"
   expect_grepl_classif(msrs(c("time_predict")), "require a learner or model")
+})
+
+test_that("get_batch_size works", {
+  expect_equal(get_batch_size(list(batch_size = 16), "train"), 16)
+  expect_equal(get_batch_size(list(batch_size = 16), "predict"), 16)
+  expect_equal(get_batch_size(list(batch_size = 16, batch_size_predict = 32), "train"), 16)
+  expect_equal(get_batch_size(list(batch_size = 16, batch_size_predict = 32), "predict"), 32)
+  expect_null(get_batch_size(list(batch_size_predict = 32), "train"))
+  expect_null(get_batch_size(list(), "predict"))
+  expect_null(get_batch_size(list(batch_size = NULL), "train"))
+
+  # arguments are asserted
+  expect_error(get_batch_size(16, "train"), "list")
+  expect_error(get_batch_size(list(batch_size = 16), "valid"), "element of set")
+  expect_error(get_batch_size(list(batch_size = 0), "train"), ">= 1")
+  expect_error(get_batch_size(list(batch_size = c(16, 32)), "train"), "length 1")
+  expect_error(get_batch_size(list(batch_size = "16"), "train"), "integerish")
+})
+
+test_that("make_check_class works", {
+  check = make_check_class("torch_sampler")
+  sampler = torch::sampler("S",
+    initialize = function(data_source) NULL,
+    .iter = function() function() coro::exhausted(),
+    .length = function() 0L
+  )
+  expect_true(check(sampler))
+  expect_string(check(1))
+  expect_string(check(sampler(1)))
+  expect_error(make_check_class(1), "character")
 })

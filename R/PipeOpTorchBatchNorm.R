@@ -31,10 +31,15 @@ PipeOpTorchBatchNorm = R6Class("PipeOpTorchBatchNorm",
     .min_dim = NULL,
     .max_dim = NULL,
     .additional_phash_input = function() {
-      list(private$.min_dim, private$.max_dim)
+      c(super$.additional_phash_input(), list(private$.min_dim, private$.max_dim))
     },
     .shapes_out = function(shapes_in, param_vals, task) {
-      list(assert_numeric(shapes_in[[1]], min.len = private$.min_dim, max.len = private$.max_dim))
+      # the number of dimensions is checked first, so that a shape that is too short is not
+      # reported as having an unknown feature dimension
+      shape = shapes_in[[1L]]
+      assert_ndim(shape, id = self$id, min = private$.min_dim, max = private$.max_dim)
+      assert_known_dims(shape, 2L, "the feature dimension (dimension 2)", self$id)
+      list(shape)
     },
     .shape_dependent_params = function(shapes_in, param_vals, task) {
       param_vals$num_features = shapes_in[[1L]][2L]

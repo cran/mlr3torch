@@ -21,6 +21,7 @@ callback_set(
   state_dict = NULL,
   load_state_dict = NULL,
   initialize = NULL,
+  weight = NULL,
   public = NULL,
   private = NULL,
   active = NULL,
@@ -45,6 +46,12 @@ Function that loads a callback state.}
 
 \item{initialize}{(\verb{function()})\cr
 The initialization method of the callback.}
+
+\item{weight}{(\code{numeric(1)})\cr
+Controls when the callback is called within a stage, see section \emph{Ordering} of \code{\link{CallbackSet}}.
+Defaults to \code{0}.
+The name is reserved for this, so \code{initialize} must not take a \code{weight} argument: wrapping such
+a callback in a \code{\link{TorchCallback}} is an error.}
 
 \item{public, private, active}{(\code{list()})\cr
 Additional public, private, and active fields to add to the callback.}
@@ -73,10 +80,10 @@ In order for the resulting class to be cloneable, the private method \verb{$deep
 provided.
 }
 \seealso{
-Other Callback: 
+Other Callback:
 \code{\link{TorchCallback}},
-\code{\link{as_torch_callback}()},
-\code{\link{as_torch_callbacks}()},
+\code{\link[=as_torch_callback]{as_torch_callback()}},
+\code{\link[=as_torch_callbacks]{as_torch_callbacks()}},
 \code{\link{mlr3torch_callbacks}},
 \code{\link{mlr_callback_set}},
 \code{\link{mlr_callback_set.checkpoint}},
@@ -84,7 +91,7 @@ Other Callback:
 \code{\link{mlr_callback_set.tb}},
 \code{\link{mlr_callback_set.unfreeze}},
 \code{\link{mlr_context_torch}},
-\code{\link{t_clbk}()},
-\code{\link{torch_callback}()}
+\code{\link[=t_clbk]{t_clbk()}},
+\code{\link[=torch_callback]{torch_callback()}}
 }
 \concept{Callback}

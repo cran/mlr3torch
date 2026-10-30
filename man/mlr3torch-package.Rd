@@ -6,7 +6,9 @@
 \alias{mlr3torch-package}
 \title{mlr3torch: Deep Learning with 'mlr3'}
 \description{
-Deep Learning library that extends the mlr3 framework by building upon the 'torch' package. It allows to conveniently build, train, and evaluate deep learning models without having to worry about low level details. Custom architectures can be created using the graph language defined in 'mlr3pipelines'.
+\if{html}{\figure{logo.svg}{options: style='float: right' alt='logo' width='120'}}
+
+Deep Learning library that extends the mlr3 framework by building upon the 'torch' package. It makes it convenient to build, train, and evaluate deep learning models without having to worry about low level details. Custom architectures can be created using the graph language defined in 'mlr3pipelines'.
 }
 \section{Options}{
 
@@ -14,6 +16,7 @@ Deep Learning library that extends the mlr3 framework by building upon the 'torc
 \item \code{mlr3torch.cache}:
 Whether to cache the downloaded data (\code{TRUE}) or not (\code{FALSE}, default).
 This can also be set to a specific folder on the file system to be used as the cache directory.
+Without caching, every task that downloads its data fetches it again in each session.
 }
 }
 
@@ -31,6 +34,7 @@ Useful links:
 
 Authors:
 \itemize{
+  \item Sebastian Fischer \email{sebf.fischer@gmail.com} (\href{https://orcid.org/0000-0002-9609-3197}{ORCID})
   \item Martin Binder \email{mlr.developer@mb706.com}
 }
 

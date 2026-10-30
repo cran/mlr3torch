@@ -1,6 +1,9 @@
 #' Auto Device
 #'
-#' First tries cuda, then cpu.
+#' Resolves the `device` parameter of a learner.
+#' `"auto"` becomes `"cuda"` when a CUDA device is available and `"cpu"` otherwise; any other value
+#' is returned unchanged, except that an explicit `"cuda"` (or `"cuda:<index>"`) without an available
+#' CUDA device with that index is an error rather than a failure deep inside libtorch later on.
 #'
 #' @param device (`character(1)`)\cr
 #'   The device. If not `NULL`, is returned as is.
@@ -10,6 +13,15 @@ auto_device = function(device = NULL) {
     device = if (cuda_is_available()) "cuda" else "cpu"
     lg$debug("Auto-detected device '%s'.", device)
   }
+  if (!is.null(device) && startsWith(device, "cuda")) {
+    if (!cuda_is_available()) {
+      stopf("Device is set to '%s', but no CUDA device is available. Set `device` to 'cpu', or to 'auto' to select automatically.", device) # nolint
+    }
+    index = sub("^cuda:?", "", device)
+    if (nzchar(index) && as.integer(index) >= cuda_device_count()) {
+      stopf("Device is set to '%s', but only %i CUDA device(s) are available (indices start at 0).", device, cuda_device_count()) # nolint
+    }
+  }
   return(device)
 }
 
@@ -17,12 +29,12 @@ running_on_mac = function() {
   Sys.info()["sysname"] == "Darwin"
 }
 
-inferps = function(fn, ignore = character(0), tags = "train") {
+inferps = function(fn, ignore = character(0), tags = "train", required = FALSE) {
   if (inherits(fn, "R6ClassGenerator")) {
     fn = get_init(fn)
-    if (is.null(fn)) {
-      return(ps())
-    }
+  }
+  if (is.null(fn)) {
+    return(ps())
   }
   assert_function(fn)
   assert_character(ignore, any.missing = FALSE)
@@ -30,25 +42,25 @@ inferps = function(fn, ignore = character(0), tags = "train") {
   frm = formals(fn)
   frm = frm[names(frm) %nin% ignore]
 
-  frm_domains = lapply(frm, function(formal) p_uty(tags = tags))
+  # an argument that has no default cannot be left unset, so it is tagged "required"
+  frm_domains = lapply(frm, function(formal) {
+    p_uty(tags = if (required && identical(formal, alist(x = )$x)) c(tags, "required") else tags)
+  })
 
   do.call(paradox::ps, frm_domains)
 }
 
 
-make_check_vector = function(d) {
+# `null_ok` must be `FALSE` for parameters the operator cannot do without
+make_check_vector = function(d, null_ok = TRUE) {
   crate(function(x) {
-    if (is.null(x) || test_integerish(x, any.missing = FALSE) && (length(x) %in% c(1, d))) {
+    if ((null_ok && is.null(x)) || test_integerish(x, any.missing = FALSE) && (length(x) %in% c(1, d))) { # nolint
       return(TRUE)
     }
     tmp = if (d == 1) "." else sprintf(" or %s.", d)
     sprintf("Must be an integerish vector of length 1%s", tmp)
-    }, d, .parent = topenv())
+    }, d, null_ok, .parent = topenv())
 }
-
-check_function_or_null = function(x) check_function(x, null.ok = TRUE)
-
-check_integerish_or_null = function(x) check_integerish(x, null.ok = TRUE)
 
 assert_inherits_classname = function(class_generator, classname) {
   assert_class(class_generator, "R6ClassGenerator")
@@ -62,11 +74,10 @@ assert_inherits_classname = function(class_generator, classname) {
 }
 
 get_init = function(x) {
-  cls = class_with_init(x)
-  if (is.null(cls)) return(NULL)
-  cls$public_methods$initialize
+  get_method(x, "initialize")
 }
 
+# jarl-ignore unused_function: called from man-roxygen/learner_example.R, which jarl does not scan
 default_task_id = function(learner) {
   task_id = get0("task_id", envir = parent.frame(), inherits = FALSE)
   if (!is.null(task_id)) {
@@ -83,15 +94,11 @@ default_task_id = function(learner) {
 
 }
 
-class_with_init = function(x) {
-  if (is.null(x)) {
-    # This is the case where no initialize method is found
-    return(NULL)
-  } else if (is.null(x$public_methods) || exists("initialize", x$public_methods, inherits = FALSE)) {
-    return(x)
-  } else {
-    Recall(x$get_inherit())
-  }
+# the method of the generator itself or, failing that, of the class it inherits from
+get_method = function(x, name) {
+  if (is.null(x) || is.null(x$public_methods)) return(NULL)
+  if (exists(name, x$public_methods, inherits = FALSE)) return(x$public_methods[[name]])
+  Recall(x$get_inherit(), name)
 }
 
 sample_input_from_shapes = function(shapes, n = 1L) {
@@ -122,35 +129,17 @@ test_equal_col_info = function(x, y) {
 }
 
 
-# a function that has argument names 'names' and returns its arguments as a named list.
-# used to simulate argument matching for `...`-functions.
-# example:
-# f = argument_matcher(c("a", "b", "c"))
-# f(1, 2, 3) --> list(a = 1, b = 2, c = 3)
-# f(1, 2, a = 3) --> list(a = 3, b = 1, c = 2)
-# usecase:
-# ff = function(...) {
-#   l = argument_matcher(c("a", "b", "c"))(...)
-#   l$a + l$b
-# }
-# # behaves like
-# ff(a, b, c) a + b
-# (Except in the aqward case of missing args)
-argument_matcher = function(args) {
-  fn = as.function(c(named_list(args, substitute()), quote(as.list(environment()))))
-  environment(fn) = topenv()
-  fn
-}
-
 uniqueify = function(new, existing) {
   make.unique(c(existing, new), sep = "_")[length(existing) + seq_along(new)]
 }
 
+#' @rdname shape_helpers
+#' @export
 shape_to_str = function(x) {
-  assert(test_list(x) || test_integerish(x) || is.null(x))
-  if (test_integerish(x)) { # single shape
+  if (is.numeric(x) || is.logical(x)) { # single shape
     return(sprintf("(%s)", paste0(x, collapse = ",")))
   }
+  assert(test_list(x) || is.null(x))
   if (is.null(x)) {
     return("(<unknown>)")
   }
@@ -162,7 +151,7 @@ shape_to_str = function(x) {
     paste0("(", paste(y, collapse = ",", recycle0 = TRUE), ")")
   })
   if (test_named(x)) {
-    repr = paste0("[", names(x), ": ",  paste(shapedescs, collapse = ";", recycle0 = TRUE), "]")
+    repr = paste0("[", paste(paste0(names(x), ": ", shapedescs), collapse = "; ", recycle0 = TRUE), "]")
     return(repr)
   }
   paste0("[",  paste(shapedescs, collapse = ";", recycle0 = TRUE), "]")
@@ -196,8 +185,12 @@ auto_cache_lazy_tensors = function(lts) {
   anyDuplicated(unlist(map_if(lts, function(x) length(x) > 0, function(x) dd(x)$dataset_hash))) > 0L
 }
 
-#' Replace the head of a network
-#' Replaces the head of the network with a linear layer with d_out classes.
+#' Replace the Head of a Network
+#'
+#' Replaces the last layer of a pretrained network with a fresh [`torch::nn_linear`] that has
+#' `d_out` output features, so a network trained on some other task can be fine-tuned on this one.
+#' The new layer's input size is read off the layer it replaces, and its weights are newly
+#' initialized while the rest of the network keeps its pretrained weights.
 #' @param network ([`torch::nn_module`])\cr
 #'   The network
 #' @param d_out (`integer(1)`)\cr
@@ -208,27 +201,22 @@ replace_head = function(network, d_out) {
   UseMethod("replace_head")
 }
 
+# Creates a check function (as expected by `custom_check`) that asserts that `x` inherits from
+# `classes`. Named `make_check_class()` and not `check_class()` to avoid masking
+# `checkmate::check_class()`.
+make_check_class = function(classes) {
+  assert_character(classes, any.missing = FALSE, min.len = 1L)
+  crate(function(x) {
+    check_class(x, classes)
+  }, classes, .parent = topenv())
+}
+
 check_nn_module = function(x) {
   check_class(x, "nn_module")
 }
 
 check_nn_module_generator = function(x) {
   check_class(x, "nn_module_generator")
-}
-
-check_callbacks = function(x) {
-  if (test_class(x, "TorchCallback")) {
-    x = list(x)
-  } else {
-    if (!test_list(x, "TorchCallback")) {
-      return("Invalid parameter 'callbacks'")
-    }
-  }
-  callback_ids = ids(x)
-  if (!test_names(callback_ids, type = "unique")) {
-    return("Callbacks must have unique IDS that are valid names.")
-  }
-  TRUE
 }
 
 LossNone = function() {
@@ -280,13 +268,21 @@ order_named_args = function(f, l) {
 #' @title Network Output Dimension
 #' @description
 #' Calculates the output dimension of a neural network for a given task that is expected by
-#' \pkg{mlr3torch}.
+#' \CRANpkg{mlr3torch}.
 #' For classification, this is the number of classes (unless it is a binary classification task,
 #' where it is 1). For regression, it is 1.
+#'
+#' This is an S3 generic and the single place where \CRANpkg{mlr3torch} decides how many output neurons
+#' a task needs: it is what [`PipeOpTorchHead`] and the [`LearnerTorch`]s that build their own head
+#' ask. Adding a method for a new task type is therefore the way to support it, see the
+#' "Supporting Other Task Types" section of [`PipeOpTorchHead`].
+#'
 #' @param x (any)\cr
 #'   The task.
 #' @param ... (any)\cr
 #'   Additional arguments. Not used yet.
+#' @return (`integer(1)`) The number of output neurons.
+#' @seealso [`PipeOpTorchHead`]
 #' @export
 output_dim_for = function(x, ...) {
   UseMethod("output_dim_for")
@@ -305,13 +301,6 @@ output_dim_for.TaskRegr = function(x, ...) {
   1L
 }
 
-all_or_none_ = function(...) {
-  args = list(...)
-  all_none = all(sapply(args, is.null))
-  all_not_none = all(!sapply(args, is.null))
-  return(all_none || all_not_none)
-}
-
 single_lazy_tensor = function(task) {
   identical(task$feature_types[, "type"][[1L]], "lazy_tensor")
 }
@@ -324,6 +313,38 @@ n_categ_features = function(task) {
   sum(task$feature_types$type %in% c("factor", "ordered", "logical"))
 }
 
-n_ltnsr_features = function(task) {
-  sum(task$feature_types$type == "lazy_tensor")
+# Cardinalities of the categorical features of a task, in the order of `task$feature_names`, which
+# is the column order of the batches that `po("torch_ingress_categ")` and `ingress_categ()` produce.
+# Two things this must get right and that are easy to get wrong:
+#  * `Task$levels()` returns `NULL` for `logical()` features, so their cardinality has to be
+#    supplied explicitly (it is always 2). Taking `lengths(task$levels(...))` alone yields 0.
+#  * `task$feature_names` and `task$feature_types` are not always in the same order (e.g. after
+#    `po("scale")`, or when the feature column role is set explicitly), so the order must not be
+#    taken from `task$feature_types`. Otherwise the cardinalities silently desync from the columns.
+categ_cardinalities = function(task) {
+  categ_types = c("factor", "ordered", "logical")
+  features = intersect(task$feature_names, task$feature_types[get("type") %in% categ_types, get("id")])
+  if (!length(features)) {
+    return(integer(0))
+  }
+  types = task$feature_types[list(features), "type", on = "id"][[1L]]
+  cardinalities = lengths(task$levels(features))[features]
+  cardinalities[types == "logical"] = 2L
+  set_names(as.integer(cardinalities), features)
+}
+
+rbind_arrays = function(xs) {
+  d = dim(xs[[1L]])
+  k = length(d)
+  walk(xs, function(x) {
+    if (!identical(dim(x)[-1L], d[-1L])) {
+      stopf("Cannot combine arrays of dimensions (%s) and (%s), they differ beyond the first dimension.", paste(d, collapse = ", "), paste(dim(x), collapse = ", ")) # nolint
+    }
+  })
+  if (k == 1L) {
+    return(array(do.call(c, xs), dim = sum(map_int(xs, function(x) dim(x)[1L]))))
+  }
+  rotated = do.call(c, lapply(xs, function(x) aperm(x, c(2:k, 1L))))
+  nrows = sum(map_int(xs, function(x) dim(x)[1L]))
+  aperm(array(rotated, dim = c(d[-1L], nrows)), c(k, seq_len(k - 1L)))
 }

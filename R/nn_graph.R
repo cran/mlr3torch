@@ -6,8 +6,15 @@
 #' @section Fields:
 #' * `graph` :: [`Graph`][mlr3pipelines::Graph]\cr
 #'   The graph (consisting primarily of [`PipeOpModule`]s) that is wrapped by the network.
+#'   When it consists only of [`PipeOpModule`]s and [`PipeOpNOP`][mlr3pipelines::PipeOpNOP]s, the order in which the
+#'   modules are called is determined once and `$forward()` calls them directly, which is much faster than running
+#'   the graph. This is determined anew when PipeOps are added to or removed from the graph, but not when only its
+#'   edges are changed, so the graph should not be modified in place.
+#'   The field cannot be set to another graph, because the parameters of the modules are registered when the network
+#'   is created. Create a new `nn_graph` instead.
 #' * `input_map` :: `character()`\cr
 #'   The names of the input arguments of the network.
+#'   Unnamed arguments of `$forward()` are matched in this order.
 #' * `shapes_in` :: `list()`\cr
 #'   The shapes of the input tensors of the network.
 #' * `output_map` :: `character()`\cr
@@ -47,7 +54,7 @@
 nn_graph = nn_module(
   "nn_graph",
   initialize = function(graph, shapes_in, output_map = graph$output$name, list_output = FALSE) {
-    self$graph = as_graph(graph, clone = FALSE)
+    private$.graph = as_graph(graph, clone = FALSE)
     self$input_map = graph$input$name  # cache this, it is expensive
 
     # we do NOT verify the input and type of the graph to be `"torch_tensor"`.
@@ -62,7 +69,8 @@ nn_graph = nn_module(
       stopf("If list_output is FALSE, output_map must have length 1.")
     }
 
-    self$argument_matcher = argument_matcher(names(self$shapes_in))
+    # the arguments are matched in the order of the graph inputs, which can differ from the order of `shapes_in`
+    self$argument_matcher = argument_matcher(self$input_map)
 
     # the following is necessary to make torch aware of all the included parameters
     # (some operators in the graph could be different from PipeOpModule, e.g. PipeOpBranch or PipeOpNOP
@@ -72,31 +80,42 @@ nn_graph = nn_module(
   },
   forward = function(...) {
     # this ensures that the arguments are passed in the correct order
-    inputs = self$argument_matcher(...)
+    inputs = unname(self$argument_matcher(...))
 
-    outputs = self$graph$train(unname(inputs), single_input = FALSE)
-
-    outputs = outputs[self$output_map]
+    # Running the graph via `Graph$train()` is slow, so the plan for calling the modules is created once.
+    # It is FALSE if the graph cannot be run without `Graph$train()`.
+    if (!forward_plan_is_current(private$.forward_plan, self$graph)) {
+      private$.forward_plan = graph_forward_plan(self$graph) %??% FALSE
+    }
+    outputs = if (isFALSE(private$.forward_plan)) {
+      self$graph$train(inputs, single_input = FALSE)[self$output_map]
+    } else {
+      run_graph_forward_plan(private$.forward_plan, self$graph$pipeops, inputs, self$output_map)
+    }
 
     if (!self$list_output) outputs = outputs[[1]]
 
     outputs
   },
   reset_parameters = function() {
-    # recursively call $reset_parameters()
-    recursive_reset = function(network) {
-      for (child in network$children) {
-        if (is.function(child$reset_parameters)) {
-          child$reset_parameters()
-          next
-        }
-        Recall(child)
-      }
-    }
-
-    recursive_reset(self)
+    reset_children(self)
   },
+  active = list(
+    graph = function(rhs) {
+      if (missing(rhs)) return(private$.graph)
+      # the parameters of the modules are registered in `$module_list` when the network is created, so another
+      # graph cannot be assigned. A nested assignment such as `network$graph$pipeops$a$module = ...` assigns the
+      # same graph.
+      if (!identical(rhs, private$.graph)) {
+        stopf("The graph of an nn_graph cannot be replaced, create a new nn_graph instead.")
+      }
+      # the nested assignment may have changed the graph, so the plan for $forward() is created anew
+      private$.forward_plan = NULL
+    }
+  ),
   private = list(
+    .graph = NULL,
+    .forward_plan = NULL,
     finalize_deep_clone = function() {
       # here we need to clone the graph without cloning
       # this assumes that the order of the PipeOps in self$graph does not change
@@ -107,11 +126,11 @@ nn_graph = nn_module(
         po$module = NULL
         po$id
       }))
-      self$graph = self$graph$clone(deep = TRUE)
+      private$.graph = self$graph$clone(deep = TRUE)
+      private$.forward_plan = NULL
       for (i in seq_along(module_ids)) {
-        # the first module is self
-        self$graph$pipeops[[module_ids[[i]]]]$module = self$module_list$modules[[i + 1]]
-        i = i + 1
+        # `$children` and not `$modules`, which also contains the module list itself and all submodules
+        self$graph$pipeops[[module_ids[[i]]]]$module = self$module_list$children[[i]]
       }
       invisible(self)
     }
@@ -236,6 +255,87 @@ argument_matcher = function(args) {
   fn = as.function(c(named_list(args, substitute()), quote(as.list(environment()))))
   environment(fn) = topenv()
   fn
+}
+
+# Plan for running a graph of PipeOpModules and PipeOpNOPs without `Graph$train()`, which is slow.
+# Used by nn_graph's $forward() and by materialize() for the preprocessing graph of lazy tensors.
+# Returns NULL if the graph contains other operators, or a vararg channel that is a graph input (which can receive a
+# variable number of inputs).
+# The values passed through the graph are stored under the names of the graph inputs and under
+# "<pipeop id>\t<channel>" for the outputs of the PipeOps. The plan contains the PipeOps in topological order (`steps`,
+# with the keys of their inputs in `sources` and of their outputs in `targets`), the keys of the graph inputs in the
+# order of `graph$input` and the keys of the graph outputs, named by the graph output names.
+graph_forward_plan = function(graph) {
+  pipeops = graph$pipeops
+  if (!all(map_lgl(pipeops, inherits, what = c("PipeOpModule", "PipeOpNOP")))) return(NULL)
+  graph_input = graph$input
+  if ("..." %in% graph_input$channel.name) return(NULL)
+  edges = graph$edges
+  key = function(id, channel) paste0(id, "\t", channel)
+
+  ids = topo_sort(data.table(
+    id = names(pipeops),
+    parents = map(names(pipeops), function(id) unique(edges$src_id[edges$dst_id == id]))
+  ))$id
+
+  steps = map(ids, function(id) {
+    po = pipeops[[id]]
+    # a vararg channel ("...") receives the outputs of all its edges, in the order of `graph$edges`, like in
+    # `Graph$train()`
+    sources = unlist(map(po$input$name, function(channel) {
+      from = edges$dst_id == id & edges$dst_channel == channel
+      if (any(from)) {
+        key(edges$src_id[from], edges$src_channel[from])
+      } else {
+        graph_input$name[graph_input$op.id == id & graph_input$channel.name == channel]
+      }
+    }))
+    list(id = id, nop = inherits(po, "PipeOpNOP"), multi_output = nrow(po$output) > 1L, sources = sources,
+      targets = key(id, po$output$name))
+  })
+
+  graph_output = graph$output
+  list(steps = steps, input_keys = graph_input$name,
+    output_keys = set_names(key(graph_output$op.id, graph_output$channel.name), graph_output$name),
+    pipeop_ids = names(pipeops))
+}
+
+# Whether a plan from `graph_forward_plan()` (or FALSE, if the graph cannot be run without `Graph$train()`) can
+# still be used for `graph`. The graph should not be modified in place, but if PipeOps were added, removed or
+# renamed, the plan is created anew instead of silently running the old graph. This is cheap enough to check
+# in every forward pass; changing only the edges of the graph is not detected.
+forward_plan_is_current = function(plan, graph) {
+  !is.null(plan) && (isFALSE(plan) || identical(plan$pipeop_ids, names(graph$pipeops)))
+}
+
+# Runs a plan from `graph_forward_plan()`. The modules are looked up in `pipeops` by id, so that the plan remains
+# valid when the graph is cloned. `inputs` are in the order of `graph$input`; returns the outputs named by and in the
+# order of `output_map` (names of graph outputs), like `Graph$train()[output_map]`.
+run_graph_forward_plan = function(plan, pipeops, inputs, output_map) {
+  values = set_names(inputs, plan$input_keys)
+  for (step in plan$steps) {
+    args = values[step$sources]
+    values[step$targets] = if (step$nop) {
+      args
+    } else if (step$multi_output) {
+      do.call(pipeops[[step$id]]$module, unname(args))
+    } else {
+      list(do.call(pipeops[[step$id]]$module, unname(args)))
+    }
+  }
+  set_names(values[plan$output_keys[output_map]], output_map)
+}
+
+# Resets the parameters of the submodules of `module`: those that have a `$reset_parameters()` method are reset by
+# it, which is therefore responsible for their own submodules, the others by resetting their submodules in turn.
+reset_children = function(module) {
+  for (child in module$children) {
+    if (is.function(child$reset_parameters)) {
+      child$reset_parameters()
+      next
+    }
+    reset_children(child)
+  }
 }
 
 # make unique ID that starts with 'newid' and appends _1, _2, etc. to avoid collisions

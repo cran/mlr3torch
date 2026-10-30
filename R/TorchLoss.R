@@ -1,5 +1,7 @@
 #' @title Convert to TorchLoss
 #'
+#' @include TorchDescriptor.R
+#'
 #' @description
 #' Converts an object to a [`TorchLoss`].
 #'
@@ -15,6 +17,35 @@
 #'
 #' @return [`TorchLoss`].
 #' @export
+#' @examplesIf torch::torch_is_installed()
+#' # Define a custom loss, here the quantile (pinball) loss for quantile regression.
+#' # The class must contain "nn_loss", as this is what as_torch_loss() dispatches on.
+#' nn_quantile_loss = nn_module(c("nn_quantile_loss", "nn_loss"),
+#'   initialize = function(q = 0.5) {
+#'     self$q = q
+#'   },
+#'   forward = function(input, target) {
+#'     d = target - input
+#'     torch_mean(torch_max(self$q * d, other = (self$q - 1) * d))
+#'   }
+#' )
+#'
+#' # additional arguments are passed to the TorchLoss constructor
+#' quantile_loss = as_torch_loss(nn_quantile_loss, task_types = "regr")
+#' quantile_loss
+#' # the parameters are inferred from the loss' initialize method
+#' quantile_loss$param_set
+#' # and can be configured when using the loss in a learner
+#' lrn("regr.mlp", loss = quantile_loss, loss.q = 0.9)
+#'
+#' # predefined losses can be converted from their key,
+#' # this is the same as t_loss("mse")
+#' as_torch_loss("mse")
+#'
+#' # TorchLosses are returned as-is, unless clone is TRUE
+#' loss = t_loss("mse")
+#' identical(as_torch_loss(loss), loss)
+#' identical(as_torch_loss(loss, clone = TRUE), loss)
 as_torch_loss = function(x, clone = FALSE, ...) {
   assert_flag(clone)
   UseMethod("as_torch_loss")
@@ -51,7 +82,7 @@ as_torch_loss.character = function(x, clone = FALSE, ...) { # nolint
 #' @section Parameters:
 #' Defined by the constructor argument `param_set`.
 #' If no parameter set is provided during construction, the parameter set is constructed by creating a parameter
-#' for each argument of the wrapped loss function, where the parametes are then of type `ParamUty`.
+#' for each argument of the wrapped loss function, where the parameters are then of type `ParamUty`.
 #'
 #' @family Torch Descriptor
 #' @export
@@ -97,6 +128,7 @@ TorchLoss = R6::R6Class("TorchLoss",
     #'   Can have arguments `task` that will be provided when the loss is instantiated.
     #' @param task_types (`character()`)\cr
     #'   The task types supported by this loss.
+    #'   If `NULL` (default), the loss is applicable to `"classif"`, `"regr"` and `"torch"`.
     #' @param param_set ([`ParamSet`][paradox::ParamSet] or `NULL`)\cr
     #'   The parameter set. If `NULL` (default) it is inferred from `torch_loss`.
     #' @template param_id
@@ -109,7 +141,7 @@ TorchLoss = R6::R6Class("TorchLoss",
       self$task_types = if (!is.null(task_types)) {
         assert_subset(task_types, mlr_reflections$task_types$type)
       } else {
-        c("classif", "regr")
+        c("classif", "regr", "torch")
       }
       assert(check_class(torch_loss, "nn_module_generator"), check_class(torch_loss, "function"))
 
@@ -252,7 +284,7 @@ mlr3torch_losses$add("mse", function() {
   p = ps(reduction = p_fct(levels = c("mean", "sum"), default = "mean", tags = "train"))
   TorchLoss$new(
     torch_loss = torch::nn_mse_loss,
-    task_types = "regr",
+    task_types = c("regr", "torch"),
     param_set = p,
     id = "mse",
     label = "Mean Squared Error",
@@ -265,7 +297,7 @@ mlr3torch_losses$add("l1", function() {
   p = ps(reduction = p_fct(levels = c("mean", "sum"), default = "mean", tags = "train"))
   TorchLoss$new(
     torch_loss = torch::nn_l1_loss,
-    task_types = "regr",
+    task_types = c("regr", "torch"),
     param_set = p,
     id = "l1",
     label = "Absolute Error",
@@ -276,15 +308,21 @@ mlr3torch_losses$add("l1", function() {
 mlr3torch_losses$add("cross_entropy", function() {
   p = ps(
     class_weight = p_uty(default = NULL, tags = "train"),
+    # `ignore_index` is 0-based, unlike everything else here: we label-encode targets 1-based (see
+    # the "Network Head and Target Encoding" section of `?LearnerTorch`) and torch converts those to
+    # libtorch's 0-based indexing, but it forwards `ignore_index` unconverted even though libtorch
+    # compares it against the already-converted target. So `ignore_index = k` ignores
+    # `task$class_names[k + 1]`, and the last class cannot be ignored at all. This is a torch bug;
+    # we deliberately do not work around it here, because a shift would have to be undone again once
+    # torch fixes it. The default -100 is a sentinel that matches no target in either convention.
     ignore_index = p_int(default = -100, tags = "train"),
     reduction = p_fct(levels = c("mean", "sum"), default = "mean", tags = "train")
   )
   TorchLoss$new(
     torch_loss = function(task, ...) {
-      if (task$task_type != "classif") {
-        stopf("Cross entropy loss is only defined for classification tasks, but task is of type '%s'", task$task_type)
-      }
-      args = list(...)
+      # an explicitly passed `NULL` (as in `t_loss("cross_entropy", class_weight = NULL)`) is kept as a
+      # list element, so it would be forwarded to the `nn_module` as an unused argument
+      args = discard(list(...), is.null)
       is_binary = "twoclass" %in% task$properties
       if (is_binary) {
         if (!is.null(args$ignore_index)) {
@@ -302,7 +340,7 @@ mlr3torch_losses$add("cross_entropy", function() {
       }
       invoke(nn_cross_entropy_loss, .args = args)
     },
-    task_types = "classif",
+    task_types = c("classif", "torch"),
     param_set = p,
     id = "cross_entropy",
     label = "Cross Entropy",
@@ -339,3 +377,7 @@ mlr3torch_losses$add("cross_entropy", function() {
 #' binary_ce = loss$generate(tsk("sonar"))
 #' binary_ce
 NULL
+
+loss_placeholder = function() {
+  TorchLoss$new(torch::nn_mse_loss, id = "placeholder", label = "Placeholder Loss")
+}

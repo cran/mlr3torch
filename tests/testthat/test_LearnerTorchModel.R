@@ -38,7 +38,7 @@ test_that("cannot clone trained LearnerTorchModel", {
     task_type = "classif",
     network = testmodule_linear(task),
     ingress_tokens = list(x = TorchIngressToken(task$feature_names, batchgetter_num, c(NA, 4L))),
-    packages = "data.table",
+    packages = "data.table"
   )
   learner$param_set$set_values(
     epochs = 0, batch_size = 50
@@ -75,7 +75,7 @@ test_that("LearnerTorchModel and marshaling", {
     task_type = "classif",
     network = testmodule_linear(task),
     ingress_tokens = list(x = TorchIngressToken(task$feature_names, batchgetter_num, c(NA, 4L))),
-    packages = "data.table",
+    packages = "data.table"
   )
   learner$encapsulate("callr", lrn("classif.featureless"))
   learner$param_set$set_values(
@@ -84,4 +84,108 @@ test_that("LearnerTorchModel and marshaling", {
   )
   learner$train(task)
   expect_class(learner$model, "learner_torch_model")
+})
+
+test_that("training does not change the hash of a LearnerTorchModel", {
+  # `.network()` consumes `.network_stored`, so a `$phash` built from that field changed as soon as
+  # the learner was trained. The identity is recorded once when the network is stored instead.
+  tokens = list(x = TorchIngressToken(c("Sepal.Length", "Sepal.Width"), batchgetter_num, c(NA, 2)))
+  network = nn_linear(2, 3)
+  mk = function(net = network) {
+    lrn("classif.torch_model", network = net, ingress_tokens = tokens, epochs = 1, batch_size = 16,
+      device = "cpu")
+  }
+
+  learner = mk()
+  before = learner$hash
+  learner$train(tsk("iris"))
+  expect_equal(before, learner$hash)
+
+  expect_equal(mk()$hash, mk()$hash)
+  expect_equal(mk()$hash, mk()$clone(deep = TRUE)$hash)
+  expect_false(identical(mk()$hash, mk(nn_linear(2, 3))$hash))
+})
+
+test_that("training does not change the hash of a graph-built learner", {
+  graph = po("torch_ingress_num") %>>% nn("head") %>>%
+    po("torch_loss", t_loss("cross_entropy")) %>>% po("torch_optimizer", t_opt("adam")) %>>%
+    po("torch_model_classif", batch_size = 16, epochs = 1, device = "cpu")
+  learner = as_learner(graph)
+  before = learner$hash
+  learner$train(tsk("iris"))
+  expect_equal(before, learner$hash)
+})
+
+test_that("resample() stores and retrieves a graph-built learner's models per iteration", {
+  # `ResultData$learners()` looks the stored learners up by `learner_hash` and merges with
+  # `sort = TRUE`, so they come back in hash order. A learner whose hash moves while it trains earns
+  # one hash per fold, and `rr$learners[[i]]` is then quietly some other fold's model.
+  withr::local_seed(1L)
+  task = tsk("iris")
+  learner = as_learner(
+    po("torch_ingress_num") %>>% nn("relu") %>>% nn("head") %>>%
+      po("torch_loss", t_loss("cross_entropy")) %>>% po("torch_optimizer", t_opt("adam")) %>>%
+      po("torch_model_classif", batch_size = 16, epochs = 1, device = "cpu", predict_type = "prob"))
+
+  rr = resample(task, learner, rsmp("cv", folds = 3), store_models = TRUE)
+  expect_equal(nrow(rr$errors), 0L)
+
+  learners = rr$learners
+  expect_list(learners, len = 3L, types = "GraphLearner")
+
+  networks = map(learners, function(l) l$model$torch_model_classif$model$network)
+  expect_list(networks, len = 3L, types = "nn_graph")
+
+  # the folds have to be told apart at all, otherwise the check below passes on any ordering
+  weights = map(networks, function(n) as.numeric(n$state_dict()[[1L]]))
+  expect_false(isTRUE(all.equal(weights[[1L]], weights[[2L]])))
+  expect_false(isTRUE(all.equal(weights[[1L]], weights[[3L]])))
+  expect_false(isTRUE(all.equal(weights[[2L]], weights[[3L]])))
+
+  # the learner filed under iteration `i` is the one that produced iteration `i`'s predictions
+  for (i in seq_len(3L)) {
+    expect_equal(
+      as.data.table(learners[[i]]$predict(task, row_ids = rr$resampling$test_set(i))),
+      as.data.table(rr$predictions()[[i]])
+    )
+  }
+})
+
+test_that("a graph-built learner rejects factor levels that differ from the train task", {
+  # the integer codes of a factor depend on its levels, so a predict task with other levels would
+  # silently be encoded differently than the train task
+  task = as_task_regr(data.table(x = factor(rep(letters[1:4], 5)), y = rnorm(20)), target = "y")
+  graph = po("torch_ingress_categ") %>>% nn("tokenizer_categ", d_token = 2) %>>% nn("flatten") %>>%
+    nn("head") %>>% po("torch_loss", "mse") %>>% po("torch_optimizer", "adam") %>>%
+    po("torch_model_regr", epochs = 1L, batch_size = 20L)
+  learner = as_learner(graph)
+  learner$train(task)
+
+  expect_error(learner$predict_newdata(data.table(x = factor(c("a", "d")))), "different column info")
+  expect_error(learner$predict_newdata(data.table(x = factor("e", levels = c(letters[1:5])))),
+    "different column info")
+  # the same levels are fine, even if not all of them occur
+  pred = learner$predict_newdata(data.table(x = factor("d", levels = letters[1:4])))
+  expect_class(pred, "PredictionRegr")
+})
+
+test_that("a graph-built learner rejects missing values at predict time", {
+  task = tsk("mtcars")
+  graph = po("torch_ingress_num") %>>% nn("head") %>>% po("torch_loss", "mse") %>>%
+    po("torch_optimizer", "adam") %>>% po("torch_model_regr", epochs = 1L, batch_size = 32L)
+  learner = as_learner(graph)
+  learner$train(task)
+
+  newdata = task$data(1:2, cols = task$feature_names)
+  newdata$cyl[1L] = NA
+  expect_error(learner$predict_newdata(newdata), "missing")
+})
+
+test_that("LearnerTorchModel only claims the properties of every LearnerTorch by default", {
+  learner = LearnerTorchModel$new(task_type = "regr")
+  expect_set_equal(learner$properties, c("marshal", "validation", "internal_tuning"))
+  learner = LearnerTorchModel$new(task_type = "classif")
+  expect_set_equal(learner$properties, c("marshal", "validation", "internal_tuning", "twoclass", "multiclass"))
+  learner = LearnerTorchModel$new(task_type = "regr", properties = "missings")
+  expect_true("missings" %in% learner$properties)
 })

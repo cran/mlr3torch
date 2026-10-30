@@ -5,56 +5,62 @@ PipeOpTorchMaxPool = R6Class("PipeOpTorchMaxPool",
     #  @template params_pipelines
     #  @param d (`integer(1)`)\cr
     #    The dimension of the max pooling operation.
-    #  @param return_indices (`logical(1)`)\cr
-    #   Whether to return the indices. See section 'Input and Output Channels' for more information.
-    initialize = function(id, d, return_indices = FALSE, param_vals = list()) {
+    initialize = function(id, d, param_vals = list()) {
       private$.d = assert_int(d, lower = 1, upper = 3, coerce = TRUE)
       module_generator = switch(private$.d, nn_max_pool1d, nn_max_pool2d, nn_max_pool3d)
       check_vector = make_check_vector(d)
       param_set = ps(
-        kernel_size = p_uty(custom_check = check_vector, tags = c("required", "train")),
+        kernel_size = p_uty(custom_check = make_check_vector(d, null_ok = FALSE), tags = c("required", "train")),
         padding = p_uty(default = 0L, custom_check = check_vector, tags = "train"),
         stride = p_uty(default = NULL, custom_check = check_vector, tags = "train"),
-        dilation = p_int(default = 1L, tags = "train"),
+        dilation = p_uty(default = 1L, custom_check = check_vector, tags = "train"),
         ceil_mode = p_lgl(default = FALSE, tags = "train")
       )
-
-      private$.return_indices = assert_flag(return_indices)
 
       super$initialize(
         id = id,
         module_generator = module_generator,
         param_vals = param_vals,
         param_set = param_set,
-        outname = if (return_indices) c("output", "indices") else "output",
+        outname = c("output", "indices")
       )
+      # the indices are only an output channel when they are requested
+      self$outputs = "output"
     }
   ),
   private = list(
     .additional_phash_input = function() {
-      list(d = private$.d)
+      c(super$.additional_phash_input(), list(d = private$.d))
     },
     .shapes_out = function(shapes_in, param_vals, task) {
-      res = list(max_output_shape(
+      # a pooling operator over `d` dimensions expects `(batch, channels, <d spatial dimensions>)`.
+      assert_ndim(shapes_in[[1L]], private$.d + 2L, self$id)
+      res = list(pool_output_shape(
         shape_in = shapes_in[[1]],
         conv_dim = private$.d,
-        padding = param_vals$padding %??% 0,
-        stride = param_vals$stride %??% param_vals$kernel_size,
-        kernel_size = param_vals$kernel_size,
-        ceil_mode = param_vals$ceil_mode %??% FALSE
+        padding = param_vals[["padding"]] %??% 0,
+        stride = param_vals[["stride"]] %??% param_vals[["kernel_size"]],
+        kernel_size = param_vals[["kernel_size"]],
+        dilation = param_vals$dilation %??% 1,
+        ceil_mode = param_vals[["ceil_mode"]] %??% FALSE,
+        id = self$id
       ))
 
-      if (private$.return_indices) rep(res, 2) else res
+      rep(res, 2)
     },
     .shape_dependent_params = function(shapes_in, param_vals, task) {
-      c(param_vals, list(return_indices = private$.return_indices))
+      # the indices are only computed when they are among `$outputs`
+      c(param_vals, list(return_indices = "indices" %in% self$output$name))
     },
-    .return_indices = NULL,
+    # torch returns the indices together with the output, or the output alone
+    .module_outputs = function() {
+      if ("indices" %in% self$output$name) c("output", "indices") else "output"
+    },
     .d = NULL
   )
 )
 
-max_output_shape = avg_output_shape
+max_output_shape = pool_output_shape
 
 #' @title 1D Max Pooling
 #' @inherit torch::nnf_max_pool1d description
@@ -63,7 +69,7 @@ max_output_shape = avg_output_shape
 #' @section Parameters:
 #' * `kernel_size` :: `integer()`\cr
 #'   The size of the window. Can be single number or a vector.
-#' * `stride` :: (`integer(1))`\cr
+#' * `stride` :: `integer()`\cr
 #'   The stride of the window. Can be a single number or a vector. Default: `kernel_size`
 #' * `padding` :: `integer()`\cr
 #'  Implicit zero paddings on both sides of the input. Can be a single number or a tuple (padW,). Default: 0
@@ -74,8 +80,10 @@ max_output_shape = avg_output_shape
 #'
 #' @templateVar id nn_max_pool1d
 #' @section Input and Output Channels:
-#' If `return_indices` is `FALSE` during construction, there is one input channel 'input' and one output channel 'output'.
-#' If `return_indices` is `TRUE`, there are two output channels 'output' and 'indices'.
+#' There is one input channel `"input"`.
+#' The module has two outputs, `"output"` and `"indices"`, of which only `"output"` is an output
+#' channel by default. Set `$outputs` to also (or only) get the indices, e.g.
+#' `outputs = c("output", "indices")`, which are only computed when they are among `$outputs`.
 #' For an explanation see [`PipeOpTorch`].
 #' @template pipeop_torch
 #' @template pipeop_torch_example
@@ -85,11 +93,8 @@ PipeOpTorchMaxPool1D = R6Class("PipeOpTorchMaxPool1D", inherit = PipeOpTorchMaxP
   public = list(
     #' @description Creates a new instance of this [R6][R6::R6Class] class.
     #' @template params_pipelines
-    #' @param return_indices (`logical(1)`)\cr
-    #'  Whether to return the indices.
-    #'  If this is `TRUE`, there are two output channels `"output"` and `"indices"`.
-    initialize = function(id = "nn_max_pool1d", return_indices = FALSE, param_vals = list()) {
-      super$initialize(id = id, d = 1, return_indices = return_indices, param_vals = param_vals)
+    initialize = function(id = "nn_max_pool1d", param_vals = list()) {
+      super$initialize(id = id, d = 1, param_vals = param_vals)
     }
   )
 )
@@ -110,11 +115,8 @@ PipeOpTorchMaxPool2D = R6Class("PipeOpTorchMaxPool2D", inherit = PipeOpTorchMaxP
   public = list(
     #' @description Creates a new instance of this [R6][R6::R6Class] class.
     #' @template params_pipelines
-    #' @param return_indices (`logical(1)`)\cr
-    #'  Whether to return the indices.
-    #'  If this is `TRUE`, there are two output channels `"output"` and `"indices"`.
-    initialize = function(id = "nn_max_pool2d", return_indices = FALSE, param_vals = list()) {
-      super$initialize(id = id, d = 2, return_indices = return_indices, param_vals = param_vals)
+    initialize = function(id = "nn_max_pool2d", param_vals = list()) {
+      super$initialize(id = id, d = 2, param_vals = param_vals)
     }
   )
 )
@@ -136,11 +138,8 @@ PipeOpTorchMaxPool3D = R6Class("PipeOpTorchMaxPool3D", inherit = PipeOpTorchMaxP
   public = list(
     #' @description Creates a new instance of this [R6][R6::R6Class] class.
     #' @template params_pipelines
-    #' @param return_indices (`logical(1)`)\cr
-    #'  Whether to return the indices.
-    #'  If this is `TRUE`, there are two output channels `"output"` and `"indices"`.
-    initialize = function(id = "nn_max_pool3d", return_indices = FALSE, param_vals = list()) {
-      super$initialize(id = id, d = 3, return_indices = return_indices, param_vals = param_vals)
+    initialize = function(id = "nn_max_pool3d", param_vals = list()) {
+      super$initialize(id = id, d = 3, param_vals = param_vals)
     }
   )
 )

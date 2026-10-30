@@ -6,7 +6,11 @@
 \title{PipeOp Torch Model}
 \description{
 Builds a Torch Learner from a \code{\link{ModelDescriptor}} and trains it with the given parameter specification.
-The task type must be specified during construction.
+
+This is \code{po("torch_model")}, which works on the general-purpose task type of \code{mlr3torch}, see
+\code{\link{TaskTorch}}.
+For classification and regression see \code{\link{PipeOpTorchModelClassif}} and \code{\link{PipeOpTorchModelRegr}}
+respectively.
 }
 \section{Parameters}{
 
@@ -20,15 +24,21 @@ prefixed with \code{"opt."}, \code{"loss."} and \code{"cb.<callback id>."} respe
 The number of epochs.
 \item \code{device} :: \code{character(1)}\cr
 The device. One of \code{"auto"}, \code{"cpu"}, or \code{"cuda"} or other values defined in \code{mlr_reflections$torch$devices}.
+A specific device can be selected by appending its index, e.g. \code{"cuda:1"} for the second GPU.
 The value is initialized to \code{"auto"}, which will select \code{"cuda"} if possible, then try \code{"mps"} and otherwise
 fall back to \code{"cpu"}.
 \item \code{num_threads} :: \code{integer(1)}\cr
-The number of threads for intraop pararallelization (if \code{device} is \code{"cpu"}).
+The number of threads for intraop parallelization (if \code{device} is \code{"cpu"}).
 This value is initialized to 1.
+When resampling, benchmarking or tuning in parallel, each worker uses this many threads, so
+divide the available cores among the workers instead of setting this to the number of cores.
 \item \code{num_interop_threads} :: \code{integer(1)}\cr
-The number of threads for intraop and interop pararallelization (if \code{device} is \code{"cpu"}).
-This value is initialized to 1.
-Note that this can only be set once during a session and changing the value within an R session will raise a warning.
+The number of threads for interop parallelization (if \code{device} is \code{"cpu"}).
+Note that this can only be set \strong{once} per session, so setting this for one learner also changes the
+behavior of other learners, and a later learner asking for a different value errors.
+\code{NULL} (default) uses whatever is set.
+In order to use different values for this parameter, use encapsulation to train the learners
+in separate R sessions.
 \item \code{seed} :: \code{integer(1)} or \code{"random"} or \code{NULL}\cr
 The torch seed that is used during training and prediction.
 This value is initialized to \code{"random"}, which means that a random seed will be sampled at the beginning of the
@@ -37,6 +47,9 @@ and used during prediction.
 Note that by setting the seed during the training phase this will mean that by default (i.e. when \code{seed} is
 \code{"random"}), clones of the learner will use a different seed.
 If set to \code{NULL}, no seeding will be done.
+This parameter only seeds torch's random number generator, it does \strong{not} seed R's.
+Anything that is drawn from R's RNG is therefore unaffected by it, so to make those parts
+reproducible you need to seed R's RNG as well, e.g. via \code{\link[=set.seed]{set.seed()}}.
 \item \code{tensor_dataset} :: \code{logical(1)} | \code{"device"}\cr
 Whether to load all batches at once at the beginning of training and stack them.
 This is initialized to \code{FALSE}.
@@ -45,6 +58,19 @@ can avoid unnecessary moving of tensors between devices.
 When your dataset fits into memory this will make the loading of batches faster.
 Note that this should not be set for datasets that contain \code{\link{lazy_tensor}}s with random data augmentation,
 as this augmentation will only be applied once at the beginning of training.
+\item \code{cache_task_data} :: \code{logical(1)}\cr
+Whether to retrieve the data from the task once and to take the batches from it, instead of retrieving every
+batch from the task, which is slow.
+This is initialized to \code{TRUE}. Set it to \code{FALSE} if a copy of the task data does not fit into memory
+(lazy tensor columns only contain indices and are small).
+\item \code{jit_trace} :: \code{logical(1)}\cr
+Whether to trace the network with \code{\link[torch:jit_trace]{torch::jit_trace()}} once at the start of training and then
+train the traced module instead of the original one.
+Not all learners support this.
+A traced network takes its inputs by position and ignores their names
+(\href{https://github.com/mlverse/torch/issues/1495}{mlverse/torch#1495}).
+The learner passes the inputs in the right order, but when calling the traced \verb{$network} of a trained learner
+with several inputs directly, they must be passed by position in the order given by \code{attr(learner$network, "input_order")}.
 }
 
 \strong{Evaluation}:
@@ -59,33 +85,67 @@ This is initialized to \code{1}.
 Note that the final model is always evaluated.
 }
 
+\strong{Resuming}:
+\itemize{
+\item \code{resume} :: \code{character(1)} or \code{TRUE}\cr
+Continues training from a checkpoint written by
+\code{\link[=mlr_callback_set.checkpoint]{t_clbk("checkpoint")}}, either the folder it wrote to or \code{TRUE},
+which takes that folder from the checkpoint callback of this learner.
+Note that \code{epochs} is the \emph{total} number of epochs, i.e. it includes the epochs the checkpoint
+was already trained for: resuming a checkpoint from epoch 5 with \code{epochs = 8} trains 3 more
+epochs.
+}
+
 \strong{Early Stopping}:
 \itemize{
 \item \code{patience} :: \code{integer(1)}\cr
 This activates early stopping using the validation scores.
 If the performance of a model does not improve for \code{patience} evaluation steps, training is ended.
-Note that the final model is stored in the learner, not the best model.
+Note that this counts \emph{evaluation steps}, not epochs: when \code{eval_freq} is greater than \code{1},
+\code{patience} evaluation steps correspond to \code{patience * eval_freq} epochs.
+Note that the final model is stored in the learner, not the best model, unless
+\code{restore_best_weights} is set to \code{TRUE}.
 This is initialized to \code{0}, which means no early stopping.
 The first entry from \code{measures_valid} is used as the metric.
+A missing (\code{NA}) score counts as no improvement, and every score improves on a missing one.
+If all scores are missing, the first evaluated epoch is reported as the best one.
 This also requires to specify the \verb{$validate} field of the Learner, as well as \code{measures_valid}.
-If this is set, the epoch after which no improvement was observed, can be accessed via the \verb{$internal_tuned_values}
-field of the learner.
 \item \code{min_delta} :: \code{double(1)}\cr
 The minimum improvement threshold for early stopping.
 Is initialized to 0.
+\item \code{restore_best_weights} :: \code{logical(1)}\cr
+Whether to restore the weights of the best epoch when training ends, instead of keeping those
+of the last epoch that was trained. Like \code{min_delta}, this only has an effect when early stopping
+is active.
+Is initialized to \code{FALSE}, i.e. the network of the last
+epoch is stored. Setting this to \code{TRUE} makes the stored network the one of the epoch that
+\verb{$internal_tuned_values} reports, and costs one additional copy of the network's parameters in
+memory.
 }
 
 \strong{Dataloader}:
 \itemize{
 \item \code{batch_size} :: \code{integer(1)}\cr
-The batch size (required).
+The batch size used by the training and prediction dataloader.
+It is required for training (unless a \code{batch_sampler} is provided, which already determines the
+batches) and it is required for prediction (unless \code{batch_size_predict} is set).
+\item \code{batch_size_predict} :: \code{integer(1)}\cr
+The batch size used by the prediction dataloader (this includes the validation data during
+training). When set, it overrides \code{batch_size} for prediction.
+The batch size does not change the predictions, but smaller batches take longer and require less
+memory.
 \item \code{shuffle} :: \code{logical(1)}\cr
 Whether to shuffle the instances in the dataset. This is initialized to \code{TRUE},
 which differs from the default (\code{FALSE}).
+It is ignored when a \code{sampler} or \code{batch_sampler} is provided.
 \item \code{sampler} :: \code{\link[torch:sampler]{torch::sampler}}\cr
-Object that defines how the dataloader draw samples.
+Object that defines how the dataloader draws samples, i.e. the order in which the observations are
+drawn. This must be the sampler \emph{generator} (as returned by \code{\link[torch:sampler]{torch::sampler()}}), not an instance,
+as it is instantiated with the training dataset internally.
 \item \code{batch_sampler} :: \code{\link[torch:sampler]{torch::sampler}}\cr
-Object that defines how the dataloader draws batches.
+Object that defines how the dataloader draws batches. As for \code{sampler}, this must be the generator.
+When it is provided, the parameters \code{batch_size}, \code{shuffle} and \code{drop_last} are ignored during
+training, because the batch sampler already determines the batches.
 \item \code{num_workers} :: \code{integer(1)}\cr
 The number of workers for data loading (batches are loaded in parallel).
 The default is \code{0}, which means that data will be loaded in the main process.
@@ -95,26 +155,29 @@ How to merge a list of samples to form a batch.
 Whether the dataloader copies tensors into CUDA pinned memory before returning them.
 \item \code{drop_last} :: \code{logical(1)}\cr
 Whether to drop the last training batch in each epoch during training. Default is \code{FALSE}.
+If it is \code{TRUE}, the batch size is capped at the number of training observations, so that
+not all of them are dropped.
+It is ignored when a \code{batch_sampler} is provided.
 \item \code{timeout} :: \code{numeric(1)}\cr
 The timeout value for collecting a batch from workers.
 Negative values mean no timeout and the default is \code{-1}.
 \item \code{worker_init_fn} :: \verb{function(id)}\cr
-A function that receives the worker id (in \verb{[1, num_workers]}) and is exectued after seeding
+A function that receives the worker id (in \verb{[1, num_workers]}) and is executed after seeding
 on the worker but before data loading.
 \item \code{worker_globals} :: \code{list()} | \code{character()}\cr
-When loading data in parallel, this allows to export globals to the workers.
+When loading data in parallel, this makes it possible to export globals to the workers.
 If this is a character vector, the objects in the global environment with those names
 are copied to the workers.
 \item \code{worker_packages} :: \code{character()}\cr
 Which packages to load on the workers.
 }
 
-Also see \code{torch::dataloder} for more information.
+Also see \code{torch::dataloader} for more information.
 }
 
 \section{Input and Output Channels}{
 
-There is one input channel \code{"input"} that takes in \code{ModelDescriptor} during traing and a \code{Task} of the specified
+There is one input channel \code{"input"} that takes in \code{ModelDescriptor} during training and a \code{Task} of the specified
 \code{task_type} during prediction.
 The output is \code{NULL} during training and a \code{Prediction} of given \code{task_type} during prediction.
 }
@@ -129,78 +192,12 @@ A trained \code{\link{LearnerTorchModel}}.
 A \code{\link{LearnerTorchModel}} is created by calling \code{\link[=model_descriptor_to_learner]{model_descriptor_to_learner()}} on the
 provided \code{\link{ModelDescriptor}} that is received through the input channel.
 Then the parameters are set according to the parameters specified in \code{PipeOpTorchModel} and
-its '$train()\verb{ method is called on the [}Task\verb{][mlr3::Task] stored in the [}ModelDescriptor`].
+its \verb{$train()} method is called on the \code{\link[mlr3:Task]{Task}} stored in the \code{\link{ModelDescriptor}}.
 }
 
 \seealso{
-Other PipeOps: 
-\code{\link{mlr_pipeops_nn_adaptive_avg_pool1d}},
-\code{\link{mlr_pipeops_nn_adaptive_avg_pool2d}},
-\code{\link{mlr_pipeops_nn_adaptive_avg_pool3d}},
-\code{\link{mlr_pipeops_nn_avg_pool1d}},
-\code{\link{mlr_pipeops_nn_avg_pool2d}},
-\code{\link{mlr_pipeops_nn_avg_pool3d}},
-\code{\link{mlr_pipeops_nn_batch_norm1d}},
-\code{\link{mlr_pipeops_nn_batch_norm2d}},
-\code{\link{mlr_pipeops_nn_batch_norm3d}},
-\code{\link{mlr_pipeops_nn_block}},
-\code{\link{mlr_pipeops_nn_celu}},
-\code{\link{mlr_pipeops_nn_conv1d}},
-\code{\link{mlr_pipeops_nn_conv2d}},
-\code{\link{mlr_pipeops_nn_conv3d}},
-\code{\link{mlr_pipeops_nn_conv_transpose1d}},
-\code{\link{mlr_pipeops_nn_conv_transpose2d}},
-\code{\link{mlr_pipeops_nn_conv_transpose3d}},
-\code{\link{mlr_pipeops_nn_dropout}},
-\code{\link{mlr_pipeops_nn_elu}},
-\code{\link{mlr_pipeops_nn_flatten}},
-\code{\link{mlr_pipeops_nn_ft_cls}},
-\code{\link{mlr_pipeops_nn_ft_transformer_block}},
-\code{\link{mlr_pipeops_nn_geglu}},
-\code{\link{mlr_pipeops_nn_gelu}},
-\code{\link{mlr_pipeops_nn_glu}},
-\code{\link{mlr_pipeops_nn_hardshrink}},
-\code{\link{mlr_pipeops_nn_hardsigmoid}},
-\code{\link{mlr_pipeops_nn_hardtanh}},
-\code{\link{mlr_pipeops_nn_head}},
-\code{\link{mlr_pipeops_nn_identity}},
-\code{\link{mlr_pipeops_nn_layer_norm}},
-\code{\link{mlr_pipeops_nn_leaky_relu}},
-\code{\link{mlr_pipeops_nn_linear}},
-\code{\link{mlr_pipeops_nn_log_sigmoid}},
-\code{\link{mlr_pipeops_nn_max_pool1d}},
-\code{\link{mlr_pipeops_nn_max_pool2d}},
-\code{\link{mlr_pipeops_nn_max_pool3d}},
-\code{\link{mlr_pipeops_nn_merge}},
-\code{\link{mlr_pipeops_nn_merge_cat}},
-\code{\link{mlr_pipeops_nn_merge_prod}},
-\code{\link{mlr_pipeops_nn_merge_sum}},
-\code{\link{mlr_pipeops_nn_prelu}},
-\code{\link{mlr_pipeops_nn_reglu}},
-\code{\link{mlr_pipeops_nn_relu}},
-\code{\link{mlr_pipeops_nn_relu6}},
-\code{\link{mlr_pipeops_nn_reshape}},
-\code{\link{mlr_pipeops_nn_rrelu}},
-\code{\link{mlr_pipeops_nn_selu}},
-\code{\link{mlr_pipeops_nn_sigmoid}},
-\code{\link{mlr_pipeops_nn_softmax}},
-\code{\link{mlr_pipeops_nn_softplus}},
-\code{\link{mlr_pipeops_nn_softshrink}},
-\code{\link{mlr_pipeops_nn_softsign}},
-\code{\link{mlr_pipeops_nn_squeeze}},
-\code{\link{mlr_pipeops_nn_tanh}},
-\code{\link{mlr_pipeops_nn_tanhshrink}},
-\code{\link{mlr_pipeops_nn_threshold}},
-\code{\link{mlr_pipeops_nn_tokenizer_categ}},
-\code{\link{mlr_pipeops_nn_tokenizer_num}},
-\code{\link{mlr_pipeops_nn_unsqueeze}},
-\code{\link{mlr_pipeops_torch_ingress}},
-\code{\link{mlr_pipeops_torch_ingress_categ}},
-\code{\link{mlr_pipeops_torch_ingress_ltnsr}},
-\code{\link{mlr_pipeops_torch_ingress_num}},
-\code{\link{mlr_pipeops_torch_loss}},
-\code{\link{mlr_pipeops_torch_model_classif}},
-\code{\link{mlr_pipeops_torch_model_regr}}
+Other PipeOps:
+\code{\link{mlr_pipeops_nn_recurrent}}
 }
 \concept{PipeOps}
 \section{Super classes}{
@@ -208,61 +205,76 @@ Other PipeOps:
 }
 \section{Methods}{
 \subsection{Public methods}{
-\itemize{
-\item \href{#method-PipeOpTorchModel-new}{\code{PipeOpTorchModel$new()}}
-\item \href{#method-PipeOpTorchModel-clone}{\code{PipeOpTorchModel$clone()}}
+  \itemize{
+    \item \href{#method-PipeOpTorchModel-initialize}{\code{PipeOpTorchModel$new()}}
+    \item \href{#method-PipeOpTorchModel-clone}{\code{PipeOpTorchModel$clone()}}
+  }
 }
-}
-\if{html}{\out{
-<details open><summary>Inherited methods</summary>
+\if{html}{\out{<details open><summary>Inherited methods</summary>
 <ul>
-<li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="help"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-help'><code>mlr3pipelines::PipeOp$help()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="predict"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-predict'><code>mlr3pipelines::PipeOp$predict()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="print"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-print'><code>mlr3pipelines::PipeOp$print()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="train"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-train'><code>mlr3pipelines::PipeOp$train()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="help"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-help'><code>mlr3pipelines::PipeOp$help()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="predict"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-predict'><code>mlr3pipelines::PipeOp$predict()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="print"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-print'><code>mlr3pipelines::PipeOp$print()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="train"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-train'><code>mlr3pipelines::PipeOp$train()</code></a></span></li>
 </ul>
-</details>
-}}
+</details>}}
 \if{html}{\out{<hr>}}
-\if{html}{\out{<a id="method-PipeOpTorchModel-new"></a>}}
-\if{latex}{\out{\hypertarget{method-PipeOpTorchModel-new}{}}}
-\subsection{Method \code{new()}}{
-Creates a new instance of this \link[R6:R6Class]{R6} class.
-\subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{PipeOpTorchModel$new(task_type, id = "torch_model", param_vals = list())}\if{html}{\out{</div>}}
-}
-
-\subsection{Arguments}{
-\if{html}{\out{<div class="arguments">}}
-\describe{
-\item{\code{task_type}}{(\code{character(1)})\cr
-The task type of the model.}
-
-\item{\code{id}}{(\code{character(1)})\cr
+\if{html}{\out{<a id="method-PipeOpTorchModel-initialize"></a>}}
+\if{latex}{\out{\hypertarget{method-PipeOpTorchModel-initialize}{}}}
+\subsection{\code{PipeOpTorchModel$new()}}{
+  Creates a new instance of this \link[R6:R6Class]{R6} class.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{PipeOpTorchModel$new(
+  task_type = "torch",
+  id = "torch_model",
+  param_vals = list(),
+  target_batchgetter = NULL,
+  predict_types = NULL
+)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{task_type}}{(\code{character(1)})\cr
+The task type of the model. Defaults to \code{"torch"}.}
+      \item{\code{id}}{(\code{character(1)})\cr
 Identifier of the resulting  object.}
-
-\item{\code{param_vals}}{(\code{list()})\cr
+      \item{\code{param_vals}}{(\code{list()})\cr
 List of hyperparameter settings, overwriting the hyperparameter settings that would
 otherwise be set during construction.}
+      \item{\code{target_batchgetter}}{(\verb{function()} or \code{NULL})\cr
+Converts the target columns of a batch into the target tensor \code{y} that the loss is applied to.
+Takes an argument \code{data}, a \code{\link[data.table:data.table]{data.table}} with only the target columns,
+and optionally an argument \code{x}, the named list of feature tensors of the batch, which is what a
+target that is a function of the input needs, see \code{\link[=get_target_batchgetter]{get_target_batchgetter()}}.
+If \code{NULL} (default), it is taken from the task via \code{\link[=get_target_batchgetter]{get_target_batchgetter()}}, which the built-in task types provide, and a \code{\link{TaskTorch}} only if it has a \code{default_target_batchgetter} or no target at all, in which case the batches have no \code{y} element.}
+      \item{\code{predict_types}}{(\code{character()})\cr
+The predict types.
+See \code{\link[mlr3:mlr_reflections]{mlr_reflections$learner_predict_types}} for available values.}
+    }
+    \if{html}{\out{</div>}}
+  }
 }
-\if{html}{\out{</div>}}
-}
-}
+
 \if{html}{\out{<hr>}}
 \if{html}{\out{<a id="method-PipeOpTorchModel-clone"></a>}}
 \if{latex}{\out{\hypertarget{method-PipeOpTorchModel-clone}{}}}
-\subsection{Method \code{clone()}}{
-The objects of this class are cloneable with this method.
-\subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{PipeOpTorchModel$clone(deep = FALSE)}\if{html}{\out{</div>}}
+\subsection{\code{PipeOpTorchModel$clone()}}{
+  The objects of this class are cloneable with this method.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{PipeOpTorchModel$clone(deep = FALSE)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{deep}}{Whether to make a deep clone.}
+    }
+    \if{html}{\out{</div>}}
+  }
 }
 
-\subsection{Arguments}{
-\if{html}{\out{<div class="arguments">}}
-\describe{
-\item{\code{deep}}{Whether to make a deep clone.}
-}
-\if{html}{\out{</div>}}
-}
-}
 }

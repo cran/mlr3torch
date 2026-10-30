@@ -538,12 +538,13 @@ test_that("early stopping works", {
   # the first evaluation can do no comparison, i.e. the second eval with no improvement is the third epoch
   expect_equal(learner$internal_tuned_values, list(epochs = 3))
 
-  # in this scenario early stopping should definitely not trigger yet
   learner$param_set$set_values(
     min_delta = 0, patience = 5, opt.lr = 0.01, eval_freq = 1
   )
   learner$train(task)
-  expect_equal(learner$internal_tuned_values, list(epochs = 1))
+  history = learner$model$callbacks$history
+  expect_equal(learner$internal_tuned_values,
+    list(epochs = history$epoch[which.min(history$valid.classif.ce)]))
 })
 
 test_that("validation works", {
@@ -783,9 +784,73 @@ test_that("dataset works", {
 })
 
 test_that("error when dataloaders have length 0", {
-  learner = lrn("regr.torch_featureless", epochs = 1L, batch_size = 100, drop_last = TRUE)
+  empty_sampler = torch::sampler(
+    "EmptyBatchSampler",
+    initialize = function(data_source) NULL,
+    .iter = function() function() coro::exhausted(),
+    .length = function() 0L
+  )
+  learner = lrn(
+    "regr.torch_featureless",
+    epochs = 1L,
+    batch_sampler = empty_sampler
+  )
   task = tsk("mtcars")
   expect_error({learner$train(task)}, "has length 0") # nolint
+})
+
+test_that("drop_last caps the batch size at the number of observations", {
+  task = tsk("iris")
+  learner = lrn(
+    "classif.torch_featureless",
+    epochs = 1L,
+    batch_size = 64L,
+    drop_last = TRUE
+  )
+  ds = learner$dataset(task)
+  get_dl = function() {
+    get_private(learner)$.dataloader(
+      ds,
+      learner$param_set$get_values(tags = "train")
+    )
+  }
+  # the batch size is kept and the remaining 22 observations are dropped
+  dl = get_dl()
+  expect_equal(dl$batch_sampler$batch_size, 64L)
+  expect_length(dl, 2L)
+
+  # a batch size larger than the training set would drop all observations
+  learner$param_set$set_values(batch_size = 256L)
+  dl = get_dl()
+  expect_equal(dl$batch_sampler$batch_size, 150L)
+  expect_length(dl, 1L)
+
+  # the sampler determines the number of observations
+  first_20 = torch::sampler(
+    "First20Sampler",
+    initialize = function(data_source) NULL,
+    .iter = function() {
+      state = new.env()
+      state$i = 0L
+      function() {
+        state$i = state$i + 1L
+        if (state$i > 20L) {
+          return(coro::exhausted())
+        }
+        state$i
+      }
+    },
+    .length = function() 20L
+  )
+  learner$param_set$set_values(sampler = first_20)
+  dl = get_dl()
+  expect_equal(dl$batch_sampler$batch_size, 20L)
+  learner$param_set$set_values(sampler = NULL)
+
+  learner$param_set$set_values(drop_last = FALSE, batch_size = 64L)
+  dl = get_dl()
+  expect_equal(dl$batch_sampler$batch_size, 64L)
+  expect_length(dl, 3L)
 })
 
 test_that("can set seed to NULL", {
@@ -899,17 +964,14 @@ test_that("internal tuned values is correct", {
 })
 
 test_that("trace-jitting works", {
-  l1 = lrn("classif.mlp", batch_size = 16, epochs = 2, jit_trace = TRUE)
-  l2 = lrn("classif.mlp", batch_size = 16, epochs = 2, jit_trace = FALSE)
+  # the learner's `seed` parameter (default "random") reseeds torch during $train(), so it has to be
+  # set for the two runs to be comparable
+  l1 = lrn("classif.mlp", batch_size = 16, epochs = 2, jit_trace = TRUE, seed = 1)
+  l2 = lrn("classif.mlp", batch_size = 16, epochs = 2, jit_trace = FALSE, seed = 1)
   task = tsk("iris")
 
-  n1 = with_torch_manual_seed({
-    l1$train(task)$network
-  }, seed = 1)
-
-  n2 = with_torch_manual_seed({
-    l2$train(task)$network
-  }, seed = 1)
+  n1 = l1$train(task)$network
+  n2 = l2$train(task)$network
 
   expect_equal(n1$parameters, n2$parameters)
   expect_class(n1, "script_module")
@@ -922,7 +984,7 @@ test_that("trace-jitting works", {
     po("nn_head") %>>%
     po("torch_optimizer") %>>%
     po("torch_loss", "cross_entropy") %>>%
-    po("torch_model_classif", epochs = 1, batch_size = 16, jit_trace = FALSE)
+    po("torch_model_classif", epochs = 1, batch_size = 16, jit_trace = FALSE, seed = 1)
 
   glrn1 = as_learner(graph, clone = TRUE)
   glrn2 = as_learner(graph, clone = TRUE)
@@ -930,13 +992,8 @@ test_that("trace-jitting works", {
     torch_model_classif.jit_trace = TRUE
   )
 
-  n3 = with_torch_manual_seed({
-    glrn1$train(task)$model$torch_model_classif$model$network
-  }, seed = 1)
-
-  n4 = with_torch_manual_seed({
-    glrn2$train(task)$model$torch_model_classif$model$network
-  }, seed = 1)
+  n3 = glrn1$train(task)$model$torch_model_classif$model$network
+  n4 = glrn2$train(task)$model$torch_model_classif$model$network
 
   expect_equal(n3$parameters, n4$parameters)
 
@@ -944,6 +1001,98 @@ test_that("trace-jitting works", {
   l1$marshal()
   l1$unmarshal()
   expect_prediction(l1$predict(task))
+})
+
+test_that("a traced network with several inputs receives them by name", {
+  # the arguments of the network are not in the order of the ingress tokens, but a traced network
+  # takes its inputs by position
+  network = nn_module(
+    initialize = function() {
+      self$linear_a = nn_linear(2, 1)
+      self$linear_b = nn_linear(2, 1)
+    },
+    forward = function(b, a) self$linear_a(a) + 10 * self$linear_b(b)
+  )()
+  task = as_task_regr(data.table(a1 = rnorm(30), a2 = rnorm(30), b1 = rnorm(30, mean = 5), b2 = rnorm(30, mean = 5),
+    y = rnorm(30)), target = "y")
+  task$internal_valid_task = task$clone(deep = TRUE)$filter(21:30)
+  task$filter(1:20)
+  ingress_tokens = list(
+    a = TorchIngressToken(c("a1", "a2"), batchgetter_num, c(NA, 2L)),
+    b = TorchIngressToken(c("b1", "b2"), batchgetter_num, c(NA, 2L))
+  )
+  make_learner = function(jit_trace) {
+    lrn("regr.torch_model", network = network, ingress_tokens = ingress_tokens, batch_size = 10L, epochs = 2L,
+      shuffle = FALSE, optimizer = t_opt("sgd", lr = 0.01), jit_trace = jit_trace, validate = "predefined",
+      measures_valid = msr("regr.mse"))
+  }
+  learner = make_learner(FALSE)
+  learner$train(task)
+  learner_jit = make_learner(TRUE)
+  learner_jit$train(task)
+  expect_class(learner_jit$network, "script_module")
+
+  # training, validation and prediction pass the inputs in the order of the network's arguments
+  expect_equal(learner_jit$internal_valid_scores, learner$internal_valid_scores, tolerance = 1e-5)
+  pred = learner$predict(task)$response
+  expect_equal(learner_jit$predict(task)$response, pred, tolerance = 1e-5)
+  learner_jit$marshal()
+  learner_jit$unmarshal()
+  expect_equal(learner_jit$predict(task)$response, pred, tolerance = 1e-5)
+
+  # a deep clone keeps the order; a trained LearnerTorchModel cannot be deep cloned, so another learner is used
+  learner = R6Class("LearnerTorchTwoInputs",
+    inherit = LearnerTorch,
+    public = list(
+      initialize = function() {
+        super$initialize(task_type = "regr", id = "regr.two_inputs", param_set = ps(), feature_types = "numeric",
+          label = "Two Inputs", man = "some_man", jittable = TRUE)
+      }
+    ),
+    private = list(
+      .network = function(task, param_vals) network$clone(deep = TRUE),
+      .ingress_tokens = function(task, param_vals) ingress_tokens
+    )
+  )$new()
+  learner$param_set$set_values(batch_size = 10L, epochs = 2L, jit_trace = TRUE)
+  learner$train(task)
+  learner_clone = learner$clone(deep = TRUE)
+  expect_equal(attr(learner_clone$network, "input_order"), c("b", "a"))
+  # FIXME: the deep clone of a traced network is not callable as a function, so `has_one_arg()` warns
+  expect_equal(suppressWarnings(learner_clone$predict(task))$response, learner$predict(task)$response)
+})
+
+test_that("a traced nn_graph receives its inputs in the order of its graph inputs", {
+  # x feeds two merges, m1 = x + y and m2 = x + z, and the output is cat(m2, m1), so the ingress tokens
+  # are in the order x, z, y, while the graph inputs are in the order x, y, z
+  graph = Graph$new()
+  for (nm in c("x", "y", "z")) {
+    graph$add_pipeop(po("select", id = paste0("select_", nm), selector = selector_name(nm)))
+    graph$add_pipeop(po("torch_ingress_num", id = paste0("ingress_", nm)))
+    graph$add_edge(paste0("select_", nm), paste0("ingress_", nm))
+  }
+  graph$add_pipeop(po("nn_merge_sum", id = "m1", innum = 2L))
+  graph$add_pipeop(po("nn_merge_sum", id = "m2", innum = 2L))
+  graph$add_pipeop(po("nn_merge_cat", id = "cat", innum = 2L))
+  graph$add_edge("ingress_x", "m1", dst_channel = "input1")
+  graph$add_edge("ingress_y", "m1", dst_channel = "input2")
+  graph$add_edge("ingress_x", "m2", dst_channel = "input1")
+  graph$add_edge("ingress_z", "m2", dst_channel = "input2")
+  graph$add_edge("m2", "cat", dst_channel = "input1")
+  graph$add_edge("m1", "cat", dst_channel = "input2")
+  task = as_task_regr(data.table(x = c(1, 2), y = c(10, 20), z = c(100, 200), target = c(0, 0)), target = "target")
+  expect_equal(names(graph$train(task)[[1L]]$ingress), c("ingress_x.input", "ingress_z.input", "ingress_y.input"))
+
+  learner = as_learner(graph %>>% nn("linear", out_features = 1L) %>>% po("torch_loss", "mse") %>>%
+    po("torch_optimizer", "sgd", lr = 0) %>>% po("torch_model_regr", epochs = 0L, batch_size = 2L, jit_trace = TRUE))
+  learner$train(task)
+  network = learner$model$torch_model_regr$model$network
+  expect_class(network, "script_module")
+  weight = as.numeric(network$parameters[[1L]])
+  bias = as.numeric(network$parameters[[2L]])
+  # cat(x + z, x + y), followed by the linear layer
+  expected = weight[[1L]] * c(101, 202) + weight[[2L]] * c(11, 22) + bias
+  expect_equal(learner$predict(task)$response, expected, tolerance = 1e-5)
 })
 
 test_that("tensor_dataset works", {
@@ -1037,13 +1186,748 @@ test_that("NA prediction during validation does not cause issues.", {
     callbacks = t_clbk("history")
   )
   task = tsk("mtcars")
-  learner$train(task)
+  expect_warning(learner$train(task), "could not be computed")
   expect_true(
-    is.na(learner$model$callbacks$history$valid.regr.mse[1L]),
+    is.na(learner$model$callbacks$history$valid.regr.mse[1L])
   )
 })
 
 test_that("printer", {
   expect_snapshot(lrn("classif.mlp",
     callbacks = list(t_clbk("history"), t_clbk("progress"))))
+})
+
+test_that("batch_size_predict overrides batch_size for prediction", {
+  task = tsk("iris")
+  learner = lrn("classif.torch_featureless", epochs = 1, batch_size = 16, batch_size_predict = 32,
+    device = "cpu")
+
+  dataset = get_private(learner)$.dataset(task, learner$param_set$values)
+  dl_train = get_private(learner)$.dataloader(dataset, learner$param_set$values)
+  dl_predict = get_private(learner)$.dataloader_predict(dataset, learner$param_set$values)
+
+  expect_equal(dl_train$batch_size, 16)
+  expect_equal(dl_predict$batch_size, 32)
+
+  # batch_size is used for both phases when batch_size_predict is not set
+  learner$param_set$set_values(batch_size_predict = NULL, batch_size = 8)
+  expect_equal(get_private(learner)$.dataloader(dataset, learner$param_set$values)$batch_size, 8)
+  expect_equal(get_private(learner)$.dataloader_predict(dataset, learner$param_set$values)$batch_size, 8)
+
+  # end-to-end
+  learner$param_set$set_values(batch_size = 16, batch_size_predict = 32)
+  learner$train(task)
+  expect_class(learner$predict(task), "PredictionClassif")
+
+  # it also applies to the validation data during training
+  callback = torch_callback(id = "loaders",
+    on_begin = function() self$ctx1 = self$ctx,
+    load_state_dict = function(state_dict) NULL,
+    state_dict = function() {
+      list(train = self$ctx1$loader_train$batch_size, valid = self$ctx1$loader_valid$batch_size)
+    }
+  )
+  learner_valid = lrn("classif.torch_featureless", epochs = 1, device = "cpu",
+    batch_size = 16, batch_size_predict = 32, callbacks = callback,
+    measures_valid = msr("classif.acc"), validate = 0.3)
+  learner_valid$train(task)
+  expect_equal(learner_valid$model$callbacks$loaders$train, 16)
+  expect_equal(learner_valid$model$callbacks$loaders$valid, 32)
+})
+
+test_that("batch_size is required for train and predict", {
+  task = tsk("iris")
+  learner = lrn("classif.torch_featureless", epochs = 1, device = "cpu")
+  expect_error_config(learner$train(task), "must be set for training")
+
+  learner$param_set$set_values(batch_size = 16)
+  learner$train(task)
+  expect_class(learner$predict(task), "PredictionClassif")
+
+  # batch_size_predict alone is not enough for training
+  learner$param_set$set_values(batch_size = NULL, batch_size_predict = 32)
+  expect_error_config(learner$train(task), "must be set for training")
+})
+
+test_that("batch_sampler works without batch_size", {
+  task = tsk("iris")
+  batch_sampler = torch::sampler("TwoBatchSampler",
+    initialize = function(data_source) {
+      self$data_source = data_source
+    },
+    .iter = function() {
+      batches = split(seq_len(length(self$data_source)), rep(1:2, length.out = length(self$data_source)))
+      state = new.env()
+      state$count = 0L
+      function() {
+        state$count = state$count + 1L
+        if (state$count > length(batches)) return(coro::exhausted())
+        batches[[state$count]]
+      }
+    },
+    .length = function() 2L
+  )
+
+  learner = lrn("classif.torch_featureless", epochs = 1, device = "cpu",
+    batch_sampler = batch_sampler)
+  # no batch_size, no shuffle set by the user: training just works
+  learner$train(task)
+  expect_class(learner$model, "learner_torch_model")
+
+  dl_train = get_private(learner)$.dataloader(
+    get_private(learner)$.dataset(task, learner$param_set$values), learner$param_set$values)
+  expect_class(dl_train$batch_sampler, "TwoBatchSampler")
+  expect_equal(length(dl_train), 2L)
+
+  # prediction requires a batch size, because the batch sampler is not used there
+  expect_error_config(learner$predict(task), "must be set for prediction")
+
+  # the same holds for the validation data during training
+  learner_valid = learner$clone(deep = TRUE)
+  learner_valid$validate = 0.3
+  learner_valid$param_set$set_values(measures_valid = msr("classif.acc"))
+  expect_error_config(learner_valid$train(task), "must be set for prediction")
+
+  learner$param_set$set_values(batch_size_predict = 50)
+  pred = learner$predict(task)
+  expect_class(pred, "PredictionClassif")
+  expect_equal(pred$row_ids, task$row_ids)
+
+  # the batch sampler is not used for prediction (it would misalign the predictions)
+  dl_predict = get_private(learner)$.dataloader_predict(
+    get_private(learner)$.dataset(task, learner$param_set$values), learner$param_set$values)
+  expect_class(dl_predict$batch_sampler, "utils_sampler_batch")
+  expect_equal(dl_predict$batch_size, 50)
+  expect_class(dl_predict$sampler, "utils_sampler_sequential")
+
+  # batch_size for training is ignored when a batch_sampler is provided
+  learner$param_set$set_values(batch_size = 1)
+  dl_train = get_private(learner)$.dataloader(
+    get_private(learner)$.dataset(task, learner$param_set$values), learner$param_set$values)
+  expect_class(dl_train$batch_sampler, "TwoBatchSampler")
+  expect_equal(length(dl_train), 2L)
+})
+
+test_that("sampler works and is only used during training", {
+  task = tsk("iris")
+  sampler = torch::sampler("ReverseSampler",
+    initialize = function(data_source) {
+      self$data_source = data_source
+    },
+    .iter = function() {
+      ii = rev(seq_len(length(self$data_source)))
+      state = new.env()
+      state$count = 0L
+      function() {
+        state$count = state$count + 1L
+        if (state$count > length(ii)) return(coro::exhausted())
+        ii[state$count]
+      }
+    },
+    .length = function() length(self$data_source)
+  )
+
+  learner = lrn("classif.torch_featureless", epochs = 1, device = "cpu",
+    batch_size = 16, sampler = sampler)
+  learner$train(task)
+
+  dataset = get_private(learner)$.dataset(task, learner$param_set$values)
+  dl_train = get_private(learner)$.dataloader(dataset, learner$param_set$values)
+  # shuffle (initialized to TRUE) is ignored in favor of the sampler
+  expect_class(dl_train$sampler, "ReverseSampler")
+  expect_equal(dl_train$batch_size, 16)
+
+  dl_predict = get_private(learner)$.dataloader_predict(dataset, learner$param_set$values)
+  expect_class(dl_predict$sampler, "utils_sampler_sequential")
+
+  pred = learner$predict(task)
+  expect_equal(pred$row_ids, task$row_ids)
+
+  # a sampler still requires a batch size
+  learner$param_set$set_values(batch_size = NULL)
+  expect_error_config(learner$train(task), "must be set for training")
+
+  # sampler and batch_sampler are mutually exclusive
+  learner$param_set$set_values(batch_size = 16, batch_sampler = sampler)
+  expect_error_config(learner$train(task), "not supported")
+})
+
+test_that("sampler and batch_sampler are checked", {
+  learner = lrn("classif.torch_featureless")
+  expect_error(learner$param_set$set_values(sampler = 1), "torch_sampler")
+  expect_error(learner$param_set$set_values(batch_sampler = 1), "torch_sampler")
+  # instances are not allowed, only the generators
+  sampler = torch::sampler("S",
+    initialize = function(data_source) NULL,
+    .iter = function() function() coro::exhausted(),
+    .length = function() 0L
+  )
+  expect_error(learner$param_set$set_values(sampler = sampler(1)), "torch_sampler")
+  learner$param_set$set_values(sampler = sampler)
+})
+
+test_that("the model has a printer", {
+  # the seed parameter only seeds torch, the internal validation split comes from R's RNG
+  withr::local_seed(1)
+  learner = lrn("classif.mlp", epochs = 2, batch_size = 50, neurons = 5, device = "cpu",
+    validate = 0.3, measures_valid = msr("classif.ce"), callbacks = t_clbk("history"),
+    seed = 1)
+  learner$train(tsk("iris"))
+  expect_snapshot(learner$model)
+})
+
+test_that("a callback can end training before its first epoch", {
+  stop_now = torch_callback("stop_now", on_begin = function() self$ctx$terminate = TRUE)
+  learner = lrn("classif.mlp", epochs = 5L, batch_size = 50, neurons = 10, callbacks = stop_now)
+  learner$train(tsk("iris"))
+  expect_equal(learner$model$epochs, 0L)
+})
+
+describe("resuming from a checkpoint", {
+  it("continues from the checkpointed epoch, with the weights the checkpoint holds", {
+    path = tempfile()
+    first = make_checkpoint(epochs = 2L, path = path)
+
+    state = new.env()
+    remember = function() {
+      state$restored = as.numeric(self$ctx$network$parameters[[1L]]$flatten())
+    }
+    record = torch_callback("record", on_begin = remember)
+
+    # 'epochs' is the total number of epochs, i.e. 3 more are trained
+    resumed = resumer(5L, path, callbacks = record)
+    resumed$train(tsk("iris"))
+    expect_equal(resumed$model$epochs, 5L)
+    expect_equal(state$restored, as.numeric(first$network$parameters[[1L]]$flatten()))
+
+    expect_error(resumer(4L, path)$train(tsk("sonar")), "was written for task 'iris'")
+
+    file = file.path(path, "state2.rds")
+    state = readRDS(file)
+    state$version = "0.0.1"
+    saveRDS(state, file)
+    expect_warning(resumer(4L, path)$train(tsk("iris")), "written by mlr3torch 0.0.1")
+  })
+
+  it("a checkpoint is refused when the internal validation split differs", {
+    path = tempfile()
+    make = function(epochs, ...) lrn("classif.mlp", epochs = epochs, batch_size = 50, neurons = 10,
+      validate = 0.3, measures_valid = msr("classif.ce"), ...)
+    make(2L, callbacks = t_clbk("checkpoint", freq = 1, path = path))$train(tsk("iris"))
+
+    resumed = make(4L)
+    resumed$param_set$set_values(resume = path)
+    expect_error(resumed$train(tsk("iris")), "different internal validation split")
+
+    plain = resumer(4L, path)
+    expect_error(plain$train(tsk("iris")), "written with an internal validation split")
+  })
+
+  it("a fixed internal validation task resumes", {
+    task = tsk("iris")
+    task$internal_valid_task = 1:30
+    path = tempfile()
+    make = function(epochs, ...) lrn("classif.mlp", epochs = epochs, batch_size = 50, neurons = 10,
+      validate = "predefined", measures_valid = msr("classif.ce"), ...)
+    make(2L, callbacks = t_clbk("checkpoint", freq = 1, path = path))$train(task)
+
+    resumed = make(4L)
+    resumed$param_set$set_values(resume = path)
+    expect_no_error(resumed$train(task))
+    expect_equal(resumed$model$epochs, 4L)
+  })
+
+  it("a folder that holds no checkpoint at all is an error", {
+    expect_error(resumer(2L, tempfile())$train(tsk("iris")), "does not exist or holds no checkpoint")
+    unrelated = tempfile()
+    dir.create(unrelated)
+    writeLines("not a checkpoint", file.path(unrelated, "notes.txt"))
+    expect_error(resumer(2L, unrelated)$train(tsk("iris")), "does not exist or holds no checkpoint")
+  })
+
+  it("training starts from scratch when there is no checkpoint yet", {
+    path = tempfile()
+    learner = resumer(2L, path, callbacks = t_clbk("checkpoint", freq = 1, path = path))
+    expect_no_error(learner$train(tsk("iris")))
+    expect_equal(learner$model$epochs, 2L)
+
+    again = resumer(4L, path, callbacks = t_clbk("checkpoint", freq = 1, path = path))
+    again$train(tsk("iris"))
+    expect_equal(again$model$epochs, 4L)
+  })
+
+  it("the most recent complete checkpoint is used", {
+    path = tempfile()
+    make_checkpoint(epochs = 3L, freq = 1L, path = path)
+    file.create(file.path(path, "network4.pt"))
+
+    resumed = resumer(4L, path)
+    expect_warning(resumed$train(tsk("iris")), "Ignoring incomplete checkpoint\\(s\\) 4")
+    expect_equal(resumed$model$epochs, 4L)
+  })
+
+  it("checkpoints without a state file are ignored", {
+    path = tempfile()
+    make_checkpoint(epochs = 2L, freq = 1L, path = path)
+    file.remove(file.path(path, "state2.rds"))
+
+    resumed = resumer(4L, path)
+    expect_warning(resumed$train(tsk("iris")), "Ignoring incomplete checkpoint\\(s\\) 2")
+    expect_equal(resumed$model$epochs, 4L)
+
+    file.remove(list.files(path, pattern = "^state", full.names = TRUE))
+    scratch = resumer(2L, path)
+    expect_warning(scratch$train(tsk("iris")), "Ignoring incomplete checkpoint")
+    expect_equal(scratch$model$epochs, 2L)
+  })
+
+  it("continues the global step across a change of batch size", {
+    path = tempfile()
+    state = new.env()
+    record = function() {
+      state$seen = c(state$seen, self$ctx$global_step)
+    }
+    spy = torch_callback("spy", on_batch_end = record)
+    make_checkpoint(epochs = 2L, path = path, callbacks = list(spy))
+    expect_equal(state$seen, 1:6)
+    expect_equal(readRDS(file.path(path, "state2.rds"))$global_step, 6)
+
+    state$seen = NULL
+    resumed = lrn("classif.mlp", epochs = 3L, batch_size = 150, neurons = 10, callbacks = spy)
+    resumed$param_set$set_values(resume = path)
+    resumed$train(tsk("iris"))
+    expect_equal(state$seen, 7L)
+  })
+
+
+  it("a checkpoint that is already at 'epochs' is loaded instead of continued", {
+    task = tsk("iris")
+    path = tempfile()
+    first = make_checkpoint(epochs = 3L, path = path)
+
+    reloaded = resumer(3L, path)
+    expect_no_error(reloaded$train(task))
+    expect_equal(reloaded$model$epochs, 3L)
+    expect_equal(
+      as.numeric(reloaded$network$parameters[[1L]]$flatten()),
+      as.numeric(first$network$parameters[[1L]]$flatten())
+    )
+    expect_equal(reloaded$predict(task)$response, first$predict(task)$response)
+
+    expect_error(resumer(2L, path)$train(task), "trained for 3 epochs, but 'epochs' is 2")
+  })
+
+  it("a finished run reports the validation scores of the checkpoint", {
+    # they are measured in an epoch, so a run that trains none has to take them from the checkpoint
+    task = task_with_valid()
+    path = tempfile()
+    args = list(validate = "predefined", measures_valid = msrs("classif.acc"))
+    first = invoke(make_checkpoint, epochs = 2L, path = path, task = task, .args = args)
+
+    reloaded = invoke(resumer, epochs = 2L, path = path, .args = args)
+    reloaded$train(task)
+    expect_equal(reloaded$internal_valid_scores, first$internal_valid_scores)
+  })
+
+  it("resume = TRUE takes the path from the checkpoint callback", {
+    path = tempfile()
+    make_checkpoint(epochs = 2L, path = path)
+
+    # the same learner definition serves the first run and every restart
+    resumed = lrn("classif.mlp", epochs = 4L, batch_size = 50, neurons = 10, resume = TRUE,
+      callbacks = t_clbk("checkpoint", freq = 1, path = path))
+    resumed$train(tsk("iris"))
+
+    expect_equal(resumed$model$epochs, 4L)
+    expect_true(file.exists(file.path(path, "network4.pt")))
+  })
+
+  it("resume = TRUE errors without a checkpoint callback", {
+    learner = lrn("classif.mlp", epochs = 2L, batch_size = 50, neurons = 10, resume = TRUE)
+    # a misconfiguration, so it must not be swallowed by a fallback learner
+    expect_error_config(learner$train(tsk("iris")), "no 'checkpoint' callback")
+  })
+
+  it("callback states that cannot be restored are skipped with a warning", {
+    path = tempfile()
+    # a callback that saves a state but cannot load one. torch_callback() rejects that combination,
+    # so the class is written by hand, as a user extending CallbackSet directly could.
+    CallbackSetWriteOnly = R6Class("CallbackSetWriteOnly", inherit = CallbackSet,
+      public = list(state_dict = function() list(a = 1)))
+    writeonly = as_torch_callback(CallbackSetWriteOnly, id = "writeonly")
+    make_checkpoint(epochs = 1L, path = path, callbacks = list(writeonly))
+
+    resumed = resumer(2L, path, callbacks = writeonly)
+    expect_warning(resumed$train(tsk("iris")), "does not implement \\$load_state_dict")
+  })
+
+  it("a state is matched to its callback by id and class", {
+    # ids alone cannot tell the callbacks apart, so the checkpoint records what was behind each one
+    path = tempfile()
+    make_checkpoint(epochs = 1L, path = path, callbacks = list(t_clbk("history")))
+
+    # a run without the callback the state belongs to
+    expect_warning(resumer(2L, path)$train(tsk("iris")), "'history'.*not part of this training run")
+
+    impostor = torch_callback("history", classname = "CallbackSetImpostor",
+      state_dict = function() list(), load_state_dict = function(state_dict) NULL)
+    expect_error(resumer(2L, path, callbacks = impostor)$train(tsk("iris")),
+      "'history' was a <CallbackSetHistory> and is a <CallbackSetImpostor>")
+
+    # the same class under the same id is restored as before
+    expect_no_error(resumer(2L, path, callbacks = t_clbk("history"))$train(tsk("iris")))
+  })
+
+  it("stateless callbacks do not interfere", {
+    path = tempfile()
+    noop = torch_callback("noop", on_epoch_end = function() NULL)
+    make_checkpoint(epochs = 2L, path = path, callbacks = list(noop))
+
+    resumed = resumer(4L, path, callbacks = noop)
+    expect_no_warning(resumed$train(tsk("iris")))
+    expect_equal(resumed$model$epochs, 4L)
+  })
+
+  it("re-running a finished script returns its model and leaves the checkpoint alone, whatever `freq` is", { # nolint
+    # `epochs` is the total, so running the same script again resumes a checkpoint that has nothing
+    # left to train. It hands back the model of that run without rewriting the checkpoint, which is
+    # what makes a script that restarts itself safe to run once more after it succeeded.
+    task = tsk("iris")
+    walk(c(1L, 2L, 3L), function(freq) {
+      path = tempfile()
+      make = function() {
+        lrn("classif.mlp", epochs = 5L, batch_size = 50, neurons = 10, resume = TRUE,
+          callbacks = t_clbk("checkpoint", freq = freq, path = path))
+      }
+      first = make()
+      first$train(task)
+      before = list.files(path)
+
+      again = make()
+      expect_no_error(again$train(task))
+      expect_equal(again$model$epochs, 5L, info = freq)
+      expect_equal(
+        as.numeric(again$network$parameters[[1L]]$flatten()),
+        as.numeric(first$network$parameters[[1L]]$flatten()),
+        info = freq
+      )
+      expect_set_equal(list.files(path), before)
+    })
+  })
+
+  it("an incomplete newest checkpoint does not make its folder unusable", {
+    # a run killed while writing a checkpoint must be able to restart into its own folder: the
+    # half-written epoch is not what a resume reads, so this one continues from 5 and rewrites 6
+    task = tsk("iris")
+    path = tempfile()
+    first = lrn("classif.mlp", epochs = 6L, batch_size = 50, neurons = 10,
+      callbacks = t_clbk("checkpoint", freq = 1, path = path))
+    first$train(task)
+    file.remove(file.path(path, "optimizer6.pt"))
+
+    resumed = lrn("classif.mlp", epochs = 8L, batch_size = 50, neurons = 10, resume = path,
+      callbacks = t_clbk("checkpoint", freq = 1, path = path))
+    expect_warning(resumed$train(task), "Ignoring incomplete checkpoint\\(s\\) 6")
+    expect_equal(resumed$model$epochs, 8L)
+    expect_true(file.exists(file.path(path, "optimizer6.pt")))
+  })
+})
+
+test_that("resample() returns the learners in iteration order", {
+  # the hash of the MLP below was not stable previously, because the hash of a newly created
+  # module changes after it's jit compiled
+  activation = nn_module("my_activation",
+    initialize = function() NULL,
+    forward = function(input) torch_relu(input)
+  )
+  task = tsk("iris")
+  withr::local_seed(1)
+  rr = resample(task, lrn("classif.mlp", activation = activation, epochs = 1, batch_size = 32,
+    neurons = 5, device = "cpu", predict_type = "prob"), rsmp("cv", folds = 3), store_models = TRUE)
+
+  # the symptom: learner `i` must be the model that produced prediction `i`
+  for (i in 1:3) {
+    expect_equal(
+      rr$learners[[i]]$predict(task, rr$resampling$test_set(i))$prob,
+      rr$predictions()[[i]]$prob
+    )
+  }
+
+  # the invariant the symptom follows from, asserted directly: the sort above is a no-op only if
+  # every iteration recorded the same hash. Checking it here does not depend on the permutation that
+  # `order()` happens to produce for three drifting hashes.
+  fact = get_private(rr)$.data$data$fact
+  expect_equal(uniqueN(fact$learner_hash), 1L)
+})
+
+test_that("training does not change the hash of a learner holding an nn_module", {
+  # just like the test above, creating a module compiles the generator which used to change
+  # it's hash
+  fresh = nn_module("my_activation2", initialize = function() NULL, forward = function(input) torch_relu(input))
+  learners = list(
+    lrn("classif.mlp", activation = fresh, neurons = 3),
+    lrn("classif.mlp", activation = nn_relu, neurons = 3),
+    lrn("regr.mlp", activation = nn_tanh, neurons = 3),
+    lrn("classif.tabm", activation = nn_relu),
+    lrn("classif.tab_resnet", n_blocks = 1, d_block = 4, d_hidden = 4, dropout1 = 0, dropout2 = 0)
+  )
+  tasks = c("iris", "iris", "mtcars", "iris", "iris")
+
+  for (i in seq_along(learners)) {
+    learner = learners[[i]]
+    learner$param_set$set_values(epochs = 1, batch_size = 16, device = "cpu")
+    before = learner$hash
+    learner$train(tsk(tasks[[i]]))
+    expect_equal(before, learner$hash, info = learner$id)
+  }
+})
+
+test_that("learners holding a different module_generator as activation hash differently", {
+  expect_false(identical(
+    lrn("classif.mlp", activation = nn_relu, neurons = 3)$hash,
+    lrn("classif.mlp", activation = nn_tanh, neurons = 3)$hash
+  ))
+})
+
+test_that("hashes are reproducible across R sessions", {
+  skip_on_cran()
+  skip_if_not_installed("callr")
+  hash_in_session = function(train) {
+    callr::r(function(train) {
+      library(mlr3torch)
+      learner = lrn("classif.mlp", activation = nn_relu, neurons = 3, epochs = 1, batch_size = 16,
+        device = "cpu")
+      if (train) learner$train(tsk("iris"))
+      learner$hash
+    }, args = list(train = train), libpath = .libPaths())
+  }
+
+  expect_equal(hash_in_session(FALSE), hash_in_session(TRUE))
+  expect_equal(hash_in_session(FALSE), lrn("classif.mlp", activation = nn_relu, neurons = 3,
+    epochs = 1, batch_size = 16, device = "cpu")$hash)
+})
+
+test_that("the machinery of LearnerTorch works on a generic torch task", {
+  task = tt_task_labels(40L)
+  learner = tt_learner(tt_loss_bce(), epochs = 2L)
+
+  expect_equal(learner$task_type, "torch")
+  # the task type claims no more than every LearnerTorch has, see `register_task_type_torch()`
+  expect_set_equal(learner$properties, c("marshal", "validation", "internal_tuning"))
+  # `prob` and `se` are opt-in, because only the task's encoder knows whether they exist;
+  # `lazy_tensor` is not, because handing the network's output back needs no encoder
+  expect_set_equal(learner$predict_types, c("response", "lazy_tensor"))
+
+  learner$train(task)
+  expect_class(learner$network, "nn_module")
+  expect_permutation(
+    names(learner$model),
+    c("seed", "network", "optimizer", "loss_fn", "task_col_info", "callbacks", "epochs",
+      "internal_valid_scores")
+  )
+
+  pred = learner$predict(task)
+  expect_class(pred, "PredictionTorch")
+  expect_matrix(pred$response, mode = "logical", nrows = task$nrow, ncols = 2L)
+
+  expect_matrix(learner$predict(task)$response, mode = "logical", nrows = task$nrow, ncols = 2L)
+})
+
+test_that("validation and early stopping work on a generic torch task", {
+  task = tt_task_labels(40L)
+  task$internal_valid_task = task$clone(deep = TRUE)
+
+  measure = msr_torch("hamming", function(truth, response) mean(as.matrix(truth) != response),
+    range = c(0, 1), minimize = TRUE)
+  learner = tt_learner(tt_loss_bce(), epochs = 6L, eval_freq = 2L,
+    measures_valid = measure, validate = "predefined")
+
+  learner$train(task)
+  expect_list(learner$internal_valid_scores, "numeric", len = 1L)
+  expect_equal(names(learner$internal_valid_scores), "hamming")
+  expect_number(learner$internal_valid_scores[[1L]], lower = 0, upper = 1)
+
+  # early stopping tunes `epochs`, which is what the "internal_tuning" property promises
+  learner$param_set$set_values(patience = 1L)
+  learner$train(task)
+  expect_number(learner$internal_tuned_values$epochs, lower = 1, upper = 6)
+})
+
+test_that("hash_input() recurses into lists so that nn_modules hash stably", {
+  expect_equal(hash_input(list(a = nn_relu, b = 1)), list(a = hash_input(nn_relu), b = 1))
+  # training instantiates the module, which mutates its environment but must not change the hash
+  l = lrn("classif.mlp", epochs = 1, batch_size = 32, neurons = 5)
+  before = l$hash
+  l$clone(deep = TRUE)$train(tsk("iris"))
+  expect_equal(l$hash, before)
+  expect_equal(l$clone(deep = TRUE)$hash, before)
+})
+
+test_that(".setup_training can customize the network, loss, optimizer and callbacks", {
+  state = new.env()
+  state$seen_optimizer = "not called"
+  LearnerTorchSetup = R6Class("LearnerTorchSetup",
+    inherit = LearnerTorchTest1,
+    private = list(
+      .setup_training = function(ctx, param_vals) {
+        super$.setup_training(ctx, param_vals)
+        state$seen_optimizer = ctx$optimizer
+        ctx$loss_fn = nn_module("wrapped_loss",
+          initialize = function(loss) self$loss = loss,
+          forward = function(input, target) self$loss(input, target)
+        )(ctx$loss_fn)
+        ctx$optimizer = self$optimizer$generate(list(
+          list(params = list(ctx$network$weight), lr = 0.5),
+          list(params = list(ctx$network$bias))
+        ))
+        ctx$callbacks$internal = torch_callback("internal",
+          state_dict = function() "internal state",
+          load_state_dict = function(state_dict) NULL
+        )$generate()
+      }
+    )
+  )
+  learner = LearnerTorchSetup$new(task_type = "classif")
+  learner$param_set$set_values(epochs = 1L, batch_size = 50L, bias = TRUE, opt.lr = 0.1)
+  learner$callbacks = t_clbk("history")
+  learner$train(tsk("iris"))
+  # the optimizer is created after the setup
+  expect_null(state$seen_optimizer)
+  groups = learner$model$optimizer$param_groups
+  expect_length(groups, 2L)
+  expect_equal(groups[[1L]]$lr, 0.5)
+  expect_equal(groups[[2L]]$lr, 0.1)
+  expect_equal(learner$model$callbacks$internal, "internal state")
+  expect_data_table(learner$model$callbacks$history)
+  expect_class(setup_ctx_field(learner, tsk("iris"), "loss_fn"), "wrapped_loss")
+
+  # the ids of added callbacks must not clash with the configured ones
+  learner$callbacks = t_clbk("history", id = "internal")
+  expect_error(learner$train(tsk("iris")), "removed or replaced the configured callback")
+})
+
+test_that("the default optimizer is created from the network that .setup_training leaves", {
+  LearnerTorchSwap = R6Class("LearnerTorchSwap",
+    inherit = LearnerTorchTest1,
+    private = list(
+      .setup_training = function(ctx, param_vals) {
+        ctx$network = nn_sequential(nn_linear(4L, 3L))
+      }
+    )
+  )
+  state = new.env()
+  spy = torch_callback("spy", on_begin = function() {
+    state$network = self$ctx$network
+    state$optimizer = self$ctx$optimizer
+  })
+  learner = LearnerTorchSwap$new(task_type = "classif")
+  learner$param_set$set_values(epochs = 1L, batch_size = 50L)
+  learner$callbacks = spy
+  learner$train(tsk("iris"))
+  expect_class(learner$network, "nn_sequential")
+  params = state$network$parameters
+  opt_params = unlist(map(state$optimizer$param_groups, "params"), recursive = FALSE)
+  expect_length(opt_params, length(params))
+  expect_true(all(map_lgl(params, function(p) some(opt_params, function(q) identical(p, q)))))
+})
+
+test_that(".setup_training may only add callbacks", {
+  make_learner = function(setup) {
+    cls = R6Class("LearnerTorchBadSetup", inherit = LearnerTorchTest1,
+      private = list(.setup_training = setup))
+    learner = cls$new(task_type = "classif")
+    learner$param_set$set_values(epochs = 1L, batch_size = 50L)
+    learner$callbacks = t_clbk("history")
+    learner
+  }
+  learner = make_learner(function(ctx, param_vals) ctx$callbacks$history = NULL)
+  expect_error(learner$train(tsk("iris")), "removed or replaced the configured callback\\(s\\) 'history'")
+  learner = make_learner(function(ctx, param_vals) {
+    ctx$callbacks$early_stopping = t_clbk("history")$generate()
+  })
+  expect_error(learner$train(tsk("iris")), "reserved id 'early_stopping'")
+  learner = make_learner(function(ctx, param_vals) ctx$loss_fn = "not a loss")
+  expect_error(learner$train(tsk("iris")), "ctx\\$loss_fn")
+})
+
+test_that("default loss is taken from mlr_reflections", {
+  expect_equal(LearnerTorchFeatureless$new(task_type = "classif")$loss$id, "cross_entropy")
+  expect_equal(LearnerTorchFeatureless$new(task_type = "regr")$loss$id, "mse")
+  make_learner = function() {
+    LearnerTorchModule$new(module_generator = function(task) nn_linear(1, 1), task_type = "torch",
+      ingress_tokens = list(x = ingress_num()))
+  }
+  expect_error(make_learner(), "no default loss for task type 'torch'")
+
+  old = mlr_reflections$torch$default_losses
+  on.exit({mlr_reflections$torch$default_losses = old}, add = TRUE)
+  mlr_reflections$torch$default_losses$torch = "mse"
+  expect_equal(make_learner()$loss$id, "mse")
+})
+
+test_that("device with an index can be used for training, prediction and materialize()", {
+  learner = lrn("classif.mlp", device = "cpu:0", epochs = 1L, batch_size = 16L, neurons = 4L)
+  task = tsk("iris")
+  learner$train(task)
+  expect_equal(learner$network$parameters[[1L]]$device$type, "cpu")
+  expect_prediction(learner$predict(task))
+  expect_class(materialize(as_lazy_tensor(1:2), device = "cpu:0", rbind = TRUE), "torch_tensor")
+  expect_error(materialize(as_lazy_tensor(1:2), device = "gpu:0"), "Must be one of")
+})
+
+test_that("the network output refers to the classes in the order of the training task", {
+  # the network predicts the classes in the order of the training task, while another task can have
+  # them in another order, e.g. with another positive class
+  learner = lrn("classif.mlp", batch_size = 50L, epochs = 10L, neurons = 10L, predict_type = "prob", seed = 1L)
+  task = tsk("sonar")
+  learner$train(task)
+  pred = learner$predict(task)
+  task_reordered = task$clone(deep = TRUE)
+  task_reordered$positive = "R"
+  pred_reordered = learner$predict(task_reordered)
+  expect_equal(colnames(pred_reordered$prob), c("R", "M"))
+  expect_equal(pred_reordered$prob[, c("M", "R")], pred$prob)
+  expect_equal(as.character(pred_reordered$response), as.character(pred$response))
+  learner$predict_type = "response"
+  expect_equal(as.character(learner$predict(task_reordered)$response), as.character(pred$response))
+
+  learner = lrn("classif.mlp", batch_size = 50L, epochs = 10L, neurons = 10L, predict_type = "prob", seed = 1L)
+  task = tsk("iris")
+  learner$train(task)
+  pred = learner$predict(task)
+  task_reordered = task$clone(deep = TRUE)$set_levels(list(Species = c("virginica", "setosa", "versicolor")))
+  pred_reordered = learner$predict(task_reordered)
+  expect_equal(pred_reordered$prob[, task$class_names], pred$prob)
+  expect_equal(as.character(pred_reordered$response), as.character(pred$response))
+
+  # the same holds for the internal validation task
+  learner = lrn("classif.mlp", batch_size = 50L, epochs = 10L, neurons = 10L, predict_type = "prob", seed = 1L,
+    validate = "predefined", measures_valid = msrs(c("classif.logloss", "classif.acc")))
+  task = tsk("sonar")
+  task$internal_valid_task = task$clone(deep = TRUE)$filter(1:60)
+  task$filter(61:208)
+  learner$train(task)
+  scores = learner$internal_valid_scores
+  task$internal_valid_task$positive = "R"
+  learner$train(task)
+  expect_equal(learner$internal_valid_scores, scores)
+
+  # a task with other classes cannot be predicted
+  task_other = task$clone(deep = TRUE)$set_levels(list(Class = c("M", "R", "X")))
+  expect_error(learner$predict(task_other), "trained to predict the classes 'M', 'R'")
+  # nor be the internal validation task
+  task$internal_valid_task$set_levels(list(Class = c("M", "R", "X")))
+  expect_error(learner$train(task), "internal validation task of task 'sonar' has the classes 'M', 'R', 'X'")
+})
+
+test_that("the internal validation task must have the factor levels of the training task", {
+  task = as_task_regr(data.table(x = factor(c("a", "b", "a")), y = c(1, 2, 3)), target = "y")
+  make_valid_task = function(levels) {
+    as_task_regr(data.table(x = factor(c("a", "b", "a"), levels = levels), y = c(1, 2, 3)), target = "y")
+  }
+  learner = lrn("regr.torch_featureless", epochs = 1L, batch_size = 3L, validate = "predefined")
+  task$internal_valid_task = make_valid_task(c("b", "a"))
+  expect_error(learner$train(task), "factor levels differ")
+  task$internal_valid_task = make_valid_task(c("a", "b"))
+  expect_no_error(learner$train(task))
 })

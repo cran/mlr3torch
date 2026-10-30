@@ -32,19 +32,72 @@ make_check_measures = function(task_type = NULL) {
 
 }
 
+check_resume = function(x) {
+  if (is.null(x) || isTRUE(x)) {
+    return(TRUE)
+  }
+  check_string(x, na.ok = FALSE)
+}
+
+# a device type from mlr_reflections$torch$devices, optionally with an index, e.g. "cuda:1"
+check_device = function(x) {
+  ok = check_string(x)
+  if (!isTRUE(ok)) {
+    return(ok)
+  }
+  parts = regmatches(x, regexec("^([a-z]+)(:[0-9]+)?$", x))[[1L]]
+  if (!length(parts) || parts[2L] %nin% mlr_reflections$torch$devices || (parts[2L] == "auto" && nzchar(parts[3L]))) {
+    return(sprintf("Must be one of %s, optionally followed by an index such as 'cuda:0', but is '%s'",
+      paste0("'", mlr_reflections$torch$devices, "'", collapse = ", "), x))
+  }
+  TRUE
+}
+assert_device = makeAssertionFunction(check_device)
+
 check_measures_regr = make_check_measures("regr")
 check_measures_classif = make_check_measures("classif")
 check_measures = make_check_measures()
 
+# samplers are passed as generators (and not as instances), because they are instantiated with the
+# dataset that is created internally
+check_sampler = make_check_class("torch_sampler")
+
+#' @title Extract the Batch Size for a Given Phase
+#' @description
+#' A [`LearnerTorch`] uses the `batch_size` parameter for both training and prediction, unless
+#' `batch_size_predict` is set, which then takes precedence during prediction.
+#' This helper resolves the batch size for one phase and is useful when overwriting the private
+#' `.dataloader()` method of a [`LearnerTorch`].
+#' @param param_vals (named `list()`)\cr
+#'   The parameter values, containing `batch_size` and/or `batch_size_predict`.
+#' @param phase (`character(1)`)\cr
+#'   Either `"train"` or `"predict"`.
+#' @return (`integer(1)` or `NULL`)\cr
+#'   The batch size for the given phase or `NULL` if none is set.
+#' @export
+#' @examples
+#' get_batch_size(list(batch_size = 16), "train")
+#' get_batch_size(list(batch_size = 16, batch_size_predict = 32), "predict")
+#' get_batch_size(list(batch_size_predict = 32), "train")
+get_batch_size = function(param_vals, phase) {
+  assert_list(param_vals, names = "unique")
+  assert_choice(phase, c("train", "predict"))
+  # `[[` and not `$`, as the latter partially matches 'batch_size' to 'batch_size_predict'
+  batch_size = if (phase == "train") {
+    param_vals[["batch_size"]]
+  } else {
+    param_vals[["batch_size_predict"]] %??% param_vals[["batch_size"]]
+  }
+  assert_int(batch_size, lower = 1L, null.ok = TRUE)
+}
+
 epochs_aggr = function(x) as.integer(ceiling(mean(unlist(x))))
 
 epochs_tune_fn = function(domain, param_vals) {
-  checkmate::assert(
-    checkmate::check_true(param_vals$patience > 0L),
-    checkmate::check_true(domain$lower <= 1),
-    combine = "and",
-    .var.name = "When using early stopping, patience is set to a value > 0 and no lower bound for epochs is set."
-  )
+  if (param_vals$patience <= 0L || domain$lower > 1) {
+    stopf("Internal tuning of 'epochs' requires early stopping to be configured: set 'patience' to a value greater than 0 and do not set a lower bound greater than 1 for 'epochs'. Got patience = %s and lower bound %s.", # nolint
+      param_vals$patience, domain$lower)
+  }
   domain$upper
 }
 
@@ -59,10 +112,13 @@ paramset_torchlearner = function(task_type, jittable = FALSE) {
   param_set = ps(
     epochs                = p_int(tags = c("train", "validation", "internal_tuning", "required"), lower = 0L,
       aggr = epochs_aggr, in_tune_fn = epochs_tune_fn, disable_in_tune = list(patience = 0, measures_valid = list())),
-    device                = p_fct(tags = c("train", "predict", "required"), levels = mlr_reflections$torch$devices, init = "auto"),
+    device                = p_uty(tags = c("train", "predict", "required"), custom_check = check_device, init = "auto"),
     num_threads           = p_int(lower = 1L, tags = c("train", "predict", "required", "threads"), init = 1L),
-    num_interop_threads   = p_int(lower = 1L, tags = c("train", "predict", "required"), init = 1L),
+    # deliberately not initialized: torch allows the interop thread count to be set only once per
+    # session, so an init would consume that one chance before the user can spend it
+    num_interop_threads   = p_int(lower = 1L, tags = c("train", "predict")),
     seed                  = p_int(tags = c("train", "predict", "required"), special_vals = list("random", NULL), init = "random"),
+    resume                = p_uty(tags = "train", default = NULL, custom_check = check_resume),
     # evaluation
     eval_freq             = p_int(lower = 1L, tags = c("train", "required"), init = 1L),
     measures_train        = p_uty(tags = c("train", "required"), custom_check = check_measures, init = list()),
@@ -70,11 +126,13 @@ paramset_torchlearner = function(task_type, jittable = FALSE) {
     # early stopping
     patience              = p_int(lower = 0L, tags = c("train", "required"), init = 0L),
     min_delta             = p_dbl(lower = 0, tags = c("train", "required"), init = 0),
+    restore_best_weights  = p_lgl(tags = c("train", "required"), init = FALSE),
     # dataloader parameters
-    batch_size            = p_int(tags = c("train", "predict", "required"), lower = 1L),
+    batch_size            = p_int(tags = c("train", "predict"), lower = 1L),
+    batch_size_predict    = p_int(tags = c("train", "predict"), lower = 1L),
     shuffle               = p_lgl(tags = "train", default = FALSE, init = TRUE),
-    sampler               = p_uty(tags = c("train", "predict")),
-    batch_sampler         = p_uty(tags = c("train", "predict")),
+    sampler               = p_uty(tags = "train", custom_check = check_sampler),
+    batch_sampler         = p_uty(tags = "train", custom_check = check_sampler),
     num_workers           = p_int(lower = 0, default = 0, tags = c("train", "predict")),
     collate_fn            = p_uty(tags = c("train", "predict"), default = NULL),
     pin_memory            = p_lgl(default = FALSE, tags = c("train", "predict")),
@@ -83,7 +141,8 @@ paramset_torchlearner = function(task_type, jittable = FALSE) {
     worker_init_fn        = p_uty(tags = c("train", "predict")),
     worker_globals        = p_uty(tags = c("train", "predict")),
     worker_packages       = p_uty(tags = c("train", "predict"), custom_check = check_character, special_vals = list(NULL)),
-    tensor_dataset        = p_fct(levels = "device", init = FALSE, tags = c("train", "predict"), special_vals = list(FALSE, TRUE))
+    tensor_dataset        = p_fct(levels = "device", init = FALSE, tags = c("train", "predict"), special_vals = list(FALSE, TRUE)),
+    cache_task_data       = p_lgl(init = TRUE, tags = c("train", "predict"))
   )
   if (jittable) {
     param_set = c(

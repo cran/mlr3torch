@@ -7,11 +7,9 @@ make_ft_transformer = function(task_type, ...) {
      ffn_activation = nn_reglu,
      residual_dropout = 0.0,
      prenormalization = TRUE,
-     is_first_layer = TRUE,
      attention_initialization = "kaiming",
      ffn_normalization = nn_layer_norm,
      attention_normalization = nn_layer_norm,
-     query_idx = NULL,
      attention_bias = TRUE,
      ffn_bias_first = TRUE,
      ffn_bias_second = TRUE,
@@ -109,6 +107,42 @@ test_that("works with lazy tensors", {
   expect_learner(learner)
 })
 
+test_that("works with only a numeric lazy tensor", {
+  task = as_task_regr(data.table(
+      x_num = as_lazy_tensor(matrix(runif(200), ncol = 2)),
+      y = rnorm(100)
+    ), target = "y", id = "test")
+
+  learner = make_ft_transformer("regr",
+    ingress_tokens = list(num.input = ingress_ltnsr("x_num"))
+  )
+  learner$train(task)
+
+  expect_learner(learner)
+})
+
+test_that("works with only a categorical lazy tensor", {
+  task = as_task_regr(data.table(
+      x_categ = as_lazy_tensor(matrix(rep(1:10, 20), ncol = 2)),
+      y = rnorm(100)
+    ), target = "y", id = "test")
+
+  learner = make_ft_transformer("regr",
+    ingress_tokens = list(categ.input = ingress_ltnsr("x_categ")),
+    cardinalities = c(10, 10)
+  )
+  learner$train(task)
+
+  expect_learner(learner)
+})
+
+test_that("ingress_tokens must be named num.input or categ.input", {
+  expect_error(
+    lrn("regr.ft_transformer", ingress_tokens = list(input = ingress_ltnsr("x"))),
+    "subset"
+  )
+})
+
 make_ft_transformer_default = function(task_type, ...) {
   params = list(
      epochs = 1L,
@@ -136,4 +170,76 @@ test_that("marshaling works (#412)", {
   lrn$marshal()$unmarshal()
   gc()
   expect_class(lrn$network$buffers[[1L]], "torch_tensor")
+})
+test_that("logical features work", {
+  # Regression test: with the previous 0/1 encoding of logical features, this errored with
+  # "Assertion on 'cardinalities' failed: Element 2 is not >= 1", and would then have indexed
+  # row 0 of the (1-based) categorical embedding.
+  learner = lrn("classif.ft_transformer", epochs = 1L, batch_size = 4L, n_blocks = 1L,
+    d_token = 8L, ffn_d_hidden_multiplier = 2, attention_n_heads = 2L,
+    attention_dropout = 0, ffn_dropout = 0, residual_dropout = 0)
+
+  d = data.frame(
+    y = factor(rep(c("a", "b"), 10)),
+    lg = rep(c(TRUE, FALSE), 10),
+    f = factor(rep(c("x", "y"), 10))
+  )
+  task = mlr3::as_task_classif(d, target = "y")
+  learner$train(task)
+  expect_prediction(learner$predict(task))
+
+  # logical-only task
+  d2 = data.frame(y = factor(rep(c("a", "b"), 10)), lg = rep(c(TRUE, FALSE), 10))
+  learner2 = learner$clone(deep = TRUE)
+  learner2$train(mlr3::as_task_classif(d2, target = "y"))
+  expect_prediction(learner2$predict(mlr3::as_task_classif(d2, target = "y")))
+})
+
+test_that("the learner trains with its default configuration", {
+  # `n_blocks`, `d_token` and the FFN width used to be de-facto mandatory although documented as
+  # defaulted; they now follow the reference implementation's default configuration.
+  learner = lrn("classif.ft_transformer", epochs = 1L, batch_size = 150L, device = "cpu")
+  expect_equal(learner$param_set$values$n_blocks, 3L)
+  expect_equal(learner$param_set$values$d_token, 192L)
+  expect_no_error(learner$train(tsk("iris")))
+})
+
+test_that("n_blocks = 0 leaves tokenizer, CLS and head", {
+  learner = lrn("classif.ft_transformer", epochs = 1L, batch_size = 150L, device = "cpu",
+    n_blocks = 0L, d_token = 8L)
+  expect_no_error(learner$train(tsk("iris")))
+  expect_class(learner$predict(tsk("iris")), "PredictionClassif")
+})
+
+test_that("d_token must be a multiple of attention_n_heads", {
+  base = list(epochs = 1L, batch_size = 150L, device = "cpu", n_blocks = 1L)
+  bad = invoke(lrn, .key = "classif.ft_transformer",
+    .args = c(base, list(d_token = 7L, attention_n_heads = 4L)))
+  expect_error(bad$train(tsk("iris")), "must be a multiple of")
+
+  # a single head is exempt, as in the reference implementation
+  ok = invoke(lrn, .key = "classif.ft_transformer",
+    .args = c(base, list(d_token = 7L, attention_n_heads = 1L)))
+  expect_no_error(ok$train(tsk("iris")))
+})
+
+test_that("prediction and validation use the training order of the features", {
+  # categorical features with different cardinalities, which `ingress_categ()` selects in the order of the task
+  task = as_task_regr(data.table(
+    y = rnorm(40), x = rnorm(40), a = factor(rep(c("p", "q"), 20)), b = factor(rep(c("r", "s", "t", "u"), 10))
+  ), target = "y")
+  task_reversed = reverse_features(task)
+
+  learner = make_ft_transformer("regr", seed = 1L)
+  learner$train(task)
+  expect_equal(learner$predict(task_reversed)$response, learner$predict(task)$response)
+
+  # the internal validation task is not reordered by `mlr3`, so the learner has to do this as well
+  learner = make_ft_transformer("regr", seed = 1L, validate = "predefined", measures_valid = msr("regr.mse"))
+  task$internal_valid_task = task$clone(deep = TRUE)
+  learner$train(task)
+  scores = learner$internal_valid_scores
+  task$internal_valid_task = task_reversed
+  learner$train(task)
+  expect_equal(learner$internal_valid_scores, scores)
 })

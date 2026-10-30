@@ -4,23 +4,27 @@
 #' @import mlr3misc
 #' @importFrom R6 R6Class is.R6
 #' @importFrom methods formalArgs
-#' @importFrom utils getFromNamespace capture.output head tail
+#' @importFrom utils getFromNamespace capture.output head tail hashtab gethash sethash
 #' @import torch
 #' @import mlr3pipelines
 #' @import mlr3
 #' @importFrom tools R_user_dir
 #' @importFrom withr with_seed
+#' @importFrom coro exhausted
 #'
 #' @section Options:
 #' * `mlr3torch.cache`:
 #'   Whether to cache the downloaded data (`TRUE`) or not (`FALSE`, default).
 #'   This can also be set to a specific folder on the file system to be used as the cache directory.
+#'   Without caching, every task that downloads its data fetches it again in each session.
 #'
 "_PACKAGE"
 
 # to silence RCMD check
 utils::globalVariables(c("self", "private", "super", ".."))
+# jarl-ignore unreachable_code: never evaluated on purpose, it only makes the static checker see the reference
 if (FALSE) knitr::knit2pandoc
+# jarl-ignore unreachable_code: never evaluated on purpose, it only makes the static checker see the reference
 if (FALSE) withr::with_seed
 
 mlr3torch_task_generators = new.env()
@@ -41,6 +45,9 @@ register_mlr3 = function() {
   iwalk(as.list(mlr3torch_feature_types), function(ft, nm) mlr_reflections$task_feature_types[[nm]] = ft) # nolint
   mlr_reflections$loaded_packages = c(mlr_reflections$loaded_packages, "mlr3torch")
 
+  register_task_type_torch(mlr_reflections)
+  mlr3::mlr_measures$add("torch.default", MeasureTorchDefault)
+
   mlr_reflections$torch = list(
     devices = c("auto", "cpu", "cuda", "mkldnn", "opengl", "opencl", "ideep", "hip", "fpga", "xla", "mps", "meta"),
     callback_stages = c(
@@ -56,9 +63,50 @@ register_mlr3 = function() {
       "on_epoch_end",
       "on_end",
       "on_exit"
-    )
+    ),
+    # ids of the losses in mlr3torch_losses that LearnerTorch uses when no loss is given;
+    # extension packages can add entries for their own task types
+    default_losses = list(classif = "cross_entropy", regr = "mse")
   )
 
+}
+
+register_task_type_torch = function(mlr_reflections) { # nolint
+  if ("torch" %chin% mlr_reflections$task_types$type) {
+    return(invisible(NULL))
+  }
+  mlr_reflections$task_types = setkeyv(rbind(mlr_reflections$task_types, rowwise_table(
+    ~type, ~package, ~task, ~learner, ~prediction, ~prediction_data, ~measure,
+    "torch", "mlr3torch", "TaskTorch", "LearnerTorch", "PredictionTorch", "PredictionDataTorch", "MeasureTorch"
+  ), fill = TRUE), "type")
+
+  mlr_reflections$task_col_roles$torch = c("feature", "target", "name", "order", "stratum", "group",
+    "weights_measure")
+  mlr_reflections$task_properties$torch = c("strata", "groups", "weights_measure")
+  mlr_reflections$learner_properties$torch = c("validation", "internal_tuning", "marshal")
+  mlr_reflections$measure_properties$torch = c("na_score", "requires_task", "requires_learner",
+    "requires_model", "requires_train_set", "weights", "requires_no_prediction", "obs_loss")
+
+  # Just give some common options. Users can anyway customize the content of 'response' to basically
+  # encode anything
+  mlr_reflections$learner_predict_types$torch = list(
+    response = "response",
+    prob = c("response", "prob"),
+    se = c("response", "se"),
+    lazy_tensor = "lazy_tensor"
+  )
+  mlr_reflections$default_measures$torch = "torch.default"
+
+  invisible(NULL)
+}
+
+unregister_task_type_torch = function(mlr_reflections) { # nolint
+  mlr_reflections$task_types = mlr_reflections$task_types[!list("torch"), on = "type"]
+  for (registry in c("task_col_roles", "task_properties", "learner_properties", "measure_properties",
+    "learner_predict_types", "default_measures")) {
+    mlr_reflections[[registry]][["torch"]] = NULL
+  }
+  invisible(NULL)
 }
 
 register_mlr3pipelines = function() {
@@ -93,6 +141,8 @@ register_mlr3pipelines = function() {
   walk(names(mlr3torch_learners), function(nm) mlr_learners$remove(nm))
   walk(names(mlr3torch_tasks), function(nm) mlr_tasks$remove(nm))
   walk(names(mlr3torch_pipeops), function(nm) mlr_pipeops$remove(nm))
+  mlr_measures$remove("torch.default")
+  unregister_task_type_torch(mlr_reflections)
   mlr_reflections$pipeops$valid_tags = setdiff(mlr_reflections$pipeops$valid_tags, mlr3torch_pipeop_tags)
   mlr_reflections$learner_feature_types = setdiff(mlr_reflections$learner_feature_types, mlr3torch_feature_types)
 }

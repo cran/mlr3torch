@@ -23,7 +23,7 @@ The state is the value calculated by the public method \verb{$shapes_out()}.
 \itemize{
 \item \code{kernel_size} :: \code{integer()}\cr
 The size of the window. Can be single number or a vector.
-\item \code{stride} :: (\verb{integer(1))}\cr
+\item \code{stride} :: \code{integer()}\cr
 The stride of the window. Can be a single number or a vector. Default: \code{kernel_size}
 \item \code{padding} :: \code{integer()}\cr
 Implicit zero paddings on both sides of the input. Can be a single number or a tuple (padW,). Default: 0
@@ -36,157 +36,81 @@ When True, will use ceil instead of floor to compute the output shape. Default: 
 
 \section{Input and Output Channels}{
 
-If \code{return_indices} is \code{FALSE} during construction, there is one input channel 'input' and one output channel 'output'.
-If \code{return_indices} is \code{TRUE}, there are two output channels 'output' and 'indices'.
+There is one input channel \code{"input"}.
+The module has two outputs, \code{"output"} and \code{"indices"}, of which only \code{"output"} is an output
+channel by default. Set \verb{$outputs} to also (or only) get the indices, e.g.
+\code{outputs = c("output", "indices")}, which are only computed when they are among \verb{$outputs}.
 For an explanation see \code{\link{PipeOpTorch}}.
 }
 
 \examples{
 \dontshow{if (torch::torch_is_installed()) withAutoprint(\{ # examplesIf}
 # Construct the PipeOp
-pipeop = po("nn_max_pool3d")
+pipeop = nn("max_pool3d")
 pipeop
 # The available parameters
 pipeop$param_set
 \dontshow{\}) # examplesIf}
 }
-\seealso{
-Other PipeOps: 
-\code{\link{mlr_pipeops_nn_adaptive_avg_pool1d}},
-\code{\link{mlr_pipeops_nn_adaptive_avg_pool2d}},
-\code{\link{mlr_pipeops_nn_adaptive_avg_pool3d}},
-\code{\link{mlr_pipeops_nn_avg_pool1d}},
-\code{\link{mlr_pipeops_nn_avg_pool2d}},
-\code{\link{mlr_pipeops_nn_avg_pool3d}},
-\code{\link{mlr_pipeops_nn_batch_norm1d}},
-\code{\link{mlr_pipeops_nn_batch_norm2d}},
-\code{\link{mlr_pipeops_nn_batch_norm3d}},
-\code{\link{mlr_pipeops_nn_block}},
-\code{\link{mlr_pipeops_nn_celu}},
-\code{\link{mlr_pipeops_nn_conv1d}},
-\code{\link{mlr_pipeops_nn_conv2d}},
-\code{\link{mlr_pipeops_nn_conv3d}},
-\code{\link{mlr_pipeops_nn_conv_transpose1d}},
-\code{\link{mlr_pipeops_nn_conv_transpose2d}},
-\code{\link{mlr_pipeops_nn_conv_transpose3d}},
-\code{\link{mlr_pipeops_nn_dropout}},
-\code{\link{mlr_pipeops_nn_elu}},
-\code{\link{mlr_pipeops_nn_flatten}},
-\code{\link{mlr_pipeops_nn_ft_cls}},
-\code{\link{mlr_pipeops_nn_ft_transformer_block}},
-\code{\link{mlr_pipeops_nn_geglu}},
-\code{\link{mlr_pipeops_nn_gelu}},
-\code{\link{mlr_pipeops_nn_glu}},
-\code{\link{mlr_pipeops_nn_hardshrink}},
-\code{\link{mlr_pipeops_nn_hardsigmoid}},
-\code{\link{mlr_pipeops_nn_hardtanh}},
-\code{\link{mlr_pipeops_nn_head}},
-\code{\link{mlr_pipeops_nn_identity}},
-\code{\link{mlr_pipeops_nn_layer_norm}},
-\code{\link{mlr_pipeops_nn_leaky_relu}},
-\code{\link{mlr_pipeops_nn_linear}},
-\code{\link{mlr_pipeops_nn_log_sigmoid}},
-\code{\link{mlr_pipeops_nn_max_pool1d}},
-\code{\link{mlr_pipeops_nn_max_pool2d}},
-\code{\link{mlr_pipeops_nn_merge}},
-\code{\link{mlr_pipeops_nn_merge_cat}},
-\code{\link{mlr_pipeops_nn_merge_prod}},
-\code{\link{mlr_pipeops_nn_merge_sum}},
-\code{\link{mlr_pipeops_nn_prelu}},
-\code{\link{mlr_pipeops_nn_reglu}},
-\code{\link{mlr_pipeops_nn_relu}},
-\code{\link{mlr_pipeops_nn_relu6}},
-\code{\link{mlr_pipeops_nn_reshape}},
-\code{\link{mlr_pipeops_nn_rrelu}},
-\code{\link{mlr_pipeops_nn_selu}},
-\code{\link{mlr_pipeops_nn_sigmoid}},
-\code{\link{mlr_pipeops_nn_softmax}},
-\code{\link{mlr_pipeops_nn_softplus}},
-\code{\link{mlr_pipeops_nn_softshrink}},
-\code{\link{mlr_pipeops_nn_softsign}},
-\code{\link{mlr_pipeops_nn_squeeze}},
-\code{\link{mlr_pipeops_nn_tanh}},
-\code{\link{mlr_pipeops_nn_tanhshrink}},
-\code{\link{mlr_pipeops_nn_threshold}},
-\code{\link{mlr_pipeops_nn_tokenizer_categ}},
-\code{\link{mlr_pipeops_nn_tokenizer_num}},
-\code{\link{mlr_pipeops_nn_unsqueeze}},
-\code{\link{mlr_pipeops_torch_ingress}},
-\code{\link{mlr_pipeops_torch_ingress_categ}},
-\code{\link{mlr_pipeops_torch_ingress_ltnsr}},
-\code{\link{mlr_pipeops_torch_ingress_num}},
-\code{\link{mlr_pipeops_torch_loss}},
-\code{\link{mlr_pipeops_torch_model}},
-\code{\link{mlr_pipeops_torch_model_classif}},
-\code{\link{mlr_pipeops_torch_model_regr}}
-}
-\concept{PipeOps}
 \section{Super classes}{
-\code{\link[mlr3pipelines:PipeOp]{mlr3pipelines::PipeOp}} -> \code{\link[mlr3torch:PipeOpTorch]{mlr3torch::PipeOpTorch}} -> \code{mlr3torch::PipeOpTorchMaxPool} -> \code{PipeOpTorchMaxPool3D}
+\code{\link[mlr3pipelines:PipeOp]{mlr3pipelines::PipeOp}} -> \code{\link[mlr3torch:PipeOpTorch]{PipeOpTorch}} -> \code{PipeOpTorchMaxPool} -> \code{PipeOpTorchMaxPool3D}
 }
 \section{Methods}{
 \subsection{Public methods}{
-\itemize{
-\item \href{#method-PipeOpTorchMaxPool3D-new}{\code{PipeOpTorchMaxPool3D$new()}}
-\item \href{#method-PipeOpTorchMaxPool3D-clone}{\code{PipeOpTorchMaxPool3D$clone()}}
+  \itemize{
+    \item \href{#method-PipeOpTorchMaxPool3D-initialize}{\code{PipeOpTorchMaxPool3D$new()}}
+    \item \href{#method-PipeOpTorchMaxPool3D-clone}{\code{PipeOpTorchMaxPool3D$clone()}}
+  }
 }
-}
-\if{html}{\out{
-<details open><summary>Inherited methods</summary>
+\if{html}{\out{<details open><summary>Inherited methods</summary>
 <ul>
-<li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="help"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-help'><code>mlr3pipelines::PipeOp$help()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="predict"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-predict'><code>mlr3pipelines::PipeOp$predict()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="print"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-print'><code>mlr3pipelines::PipeOp$print()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="train"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-train'><code>mlr3pipelines::PipeOp$train()</code></a></span></li>
-<li><span class="pkg-link" data-pkg="mlr3torch" data-topic="PipeOpTorch" data-id="shapes_out"><a href='../../mlr3torch/html/PipeOpTorch.html#method-PipeOpTorch-shapes_out'><code>mlr3torch::PipeOpTorch$shapes_out()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="help"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-help'><code>mlr3pipelines::PipeOp$help()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="predict"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-predict'><code>mlr3pipelines::PipeOp$predict()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="print"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-print'><code>mlr3pipelines::PipeOp$print()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3pipelines" data-topic="PipeOp" data-id="train"><a href='../../mlr3pipelines/html/PipeOp.html#method-PipeOp-train'><code>mlr3pipelines::PipeOp$train()</code></a></span></li>
+  <li><span class="pkg-link" data-pkg="mlr3torch" data-topic="PipeOpTorch" data-id="shapes_out"><a href='../../mlr3torch/html/PipeOpTorch.html#method-PipeOpTorch-shapes_out'><code>PipeOpTorch$shapes_out()</code></a></span></li>
 </ul>
-</details>
-}}
+</details>}}
 \if{html}{\out{<hr>}}
-\if{html}{\out{<a id="method-PipeOpTorchMaxPool3D-new"></a>}}
-\if{latex}{\out{\hypertarget{method-PipeOpTorchMaxPool3D-new}{}}}
-\subsection{Method \code{new()}}{
-Creates a new instance of this \link[R6:R6Class]{R6} class.
-\subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{PipeOpTorchMaxPool3D$new(
-  id = "nn_max_pool3d",
-  return_indices = FALSE,
-  param_vals = list()
-)}\if{html}{\out{</div>}}
-}
-
-\subsection{Arguments}{
-\if{html}{\out{<div class="arguments">}}
-\describe{
-\item{\code{id}}{(\code{character(1)})\cr
+\if{html}{\out{<a id="method-PipeOpTorchMaxPool3D-initialize"></a>}}
+\if{latex}{\out{\hypertarget{method-PipeOpTorchMaxPool3D-initialize}{}}}
+\subsection{\code{PipeOpTorchMaxPool3D$new()}}{
+  Creates a new instance of this \link[R6:R6Class]{R6} class.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{PipeOpTorchMaxPool3D$new(id = "nn_max_pool3d", param_vals = list())}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{id}}{(\code{character(1)})\cr
 Identifier of the resulting  object.}
-
-\item{\code{return_indices}}{(\code{logical(1)})\cr
-Whether to return the indices.
-If this is \code{TRUE}, there are two output channels \code{"output"} and \code{"indices"}.}
-
-\item{\code{param_vals}}{(\code{list()})\cr
+      \item{\code{param_vals}}{(\code{list()})\cr
 List of hyperparameter settings, overwriting the hyperparameter settings that would
 otherwise be set during construction.}
+    }
+    \if{html}{\out{</div>}}
+  }
 }
-\if{html}{\out{</div>}}
-}
-}
+
 \if{html}{\out{<hr>}}
 \if{html}{\out{<a id="method-PipeOpTorchMaxPool3D-clone"></a>}}
 \if{latex}{\out{\hypertarget{method-PipeOpTorchMaxPool3D-clone}{}}}
-\subsection{Method \code{clone()}}{
-The objects of this class are cloneable with this method.
-\subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{PipeOpTorchMaxPool3D$clone(deep = FALSE)}\if{html}{\out{</div>}}
+\subsection{\code{PipeOpTorchMaxPool3D$clone()}}{
+  The objects of this class are cloneable with this method.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{PipeOpTorchMaxPool3D$clone(deep = FALSE)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{deep}}{Whether to make a deep clone.}
+    }
+    \if{html}{\out{</div>}}
+  }
 }
 
-\subsection{Arguments}{
-\if{html}{\out{<div class="arguments">}}
-\describe{
-\item{\code{deep}}{Whether to make a deep clone.}
-}
-\if{html}{\out{</div>}}
-}
-}
 }

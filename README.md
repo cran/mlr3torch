@@ -40,13 +40,13 @@ More information about installing `torch` can be found
 
 `mlr3torch` is a deep learning framework for the
 [`mlr3`](https://mlr-org.com) ecosystem built on top of
-[`torch`](https://torch.mlverse.org/). It allows to easily build, train
-and evaluate deep learning models in a few lines of codes, without
+[`torch`](https://torch.mlverse.org/). It makes it easy to build, train
+and evaluate deep learning models in a few lines of code, without
 needing to worry about low-level details. Off-the-shelf learners are
 readily available, but custom architectures can be defined by connecting
 `PipeOpTorch` operators in an `mlr3pipelines::Graph`.
 
-Using predefined learners such as a simple multi layer perceptron (MLP)
+Using predefined learners such as a simple multi-layer perceptron (MLP)
 works just like any other mlr3 `Learner`.
 
 ``` r
@@ -80,18 +80,19 @@ learner_mlp$train(tsk("sonar"))
 ```
 
 Next, we construct the same architecture using `PipeOpTorch` objects.
-The first pipeop – a `PipeOpTorchIngress` – defines the entrypoint of
+The first pipeop – a `PipeOpTorchIngress` – defines the entry point of
 the network. All subsequent pipeops define the neural network layers.
 
 ``` r
 architecture = po("torch_ingress_num") %>>%
-  po("nn_linear", out_features = 20) %>>%
-  po("nn_relu") %>>%
-  po("nn_head")
+  nn("linear", out_features = 20) %>>%
+  nn("relu") %>>%
+  nn("head")
 ```
 
 To turn this into a learner, we configure the loss, optimizer, callbacks
-as well as the training arguments.
+as well as the training arguments, and convert the resulting `Graph` via
+`as_learner_torch()`.
 
 ``` r
 graph_mlp = architecture %>>%
@@ -101,13 +102,13 @@ graph_mlp = architecture %>>%
   po("torch_model_classif",
     batch_size = 16, epochs = 50, device = "cpu")
 
-graph_lrn = as_learner(graph_mlp)
+graph_lrn = as_learner_torch(graph_mlp)
 ```
 
 To work with generic tensors, the `lazy_tensor` type can be used. It
-wraps a `torch::dataset`, but allows to preprocess the data (lazily)
-using `PipeOp` objects. Below, we flatten the MNIST task, so we can then
-train a multi-layer perceptron on it. Note that this does *not*
+wraps a `torch::dataset`, but makes it possible to preprocess the data
+(lazily) using `PipeOp` objects. Below, we flatten the MNIST task, so we
+can then train a multi-layer perceptron on it. Note that this does *not*
 transform the data in-memory, but is only applied when the data is
 actually loaded.
 
@@ -154,24 +155,22 @@ block:
 ``` r
 layer = list(
   po("nop"),
-  po("nn_linear", out_features = 50L) %>>%
-    po("nn_dropout") %>>% po("nn_relu")
-) %>>% po("nn_merge_sum")
+  nn("linear", out_features = 50L) %>>%
+    nn("dropout") %>>% nn("relu")
+) %>>% nn("merge_sum")
 ```
 
 Next, we create a neural network that takes as input a `lazy_tensor`
 (`po("torch_ingress_ltnsr")`). It first applies a linear layer and then
 repeats the above layer using the special `PipeOpTorchBlock`, followed
 by the network’s head. After that, we configure the loss, optimizer and
-the training parameters. Note that `po("nn_linear_0")` is equivalent to
-`po("nn_linear", id = "nn_linear_0")` and we need this here to avoid ID
-clashes with the linear layer from `po("nn_block")`.
+the training parameters.
 
 ``` r
 deep_network = po("torch_ingress_ltnsr") %>>%
-  po("nn_linear", out_features = 50L) %>>%
-  po("nn_block", layer, n_blocks = 5L) %>>%
-  po("nn_head") %>>%
+  nn("linear", out_features = 50L) %>>%
+  nn("block", layer, n_blocks = 5L) %>>%
+  nn("head") %>>%
   po("torch_loss", loss = t_loss("cross_entropy")) %>>%
   po("torch_optimizer", optimizer = t_opt("adam")) %>>%
   po("torch_model_classif",
@@ -183,7 +182,7 @@ Next, we prepend the preprocessing step that flattens the images so we
 can directly apply this learner to the unflattened MNIST task.
 
 ``` r
-deep_learner = as_learner(
+deep_learner = as_learner_torch(
   flattener %>>% deep_network
 )
 deep_learner$id = "deep_network"
@@ -207,29 +206,46 @@ deep_learner$train(mnist)
 
 ## Feature Overview
 
-- Off-the-shelf architectures are readily available as `mlr3::Learner`s.
-- Currently, supervised regression and classification is supported.
-- Custom learners can be defined using the `Graph` language from
-  `mlr3pipelines`.
-- The package supports tabular data, as well as generic tensors via the
-  `lazy_tensor` type.
-- Multi-modal data can be handled conveniently, as `lazy_tensor` objects
-  can be stored alongside tabular data.
-- It is possible to customize the training process via (predefined or
-  custom) callbacks.
-- The package is fully integrated into the `mlr3` ecosystem.
-- Neural network architectures, as well as their hyperparameters can be
-  easily tuned via `mlr3tuning` and friends.
+- **Off-the-shelf learners** are readily available as `mlr3::Learner`s,
+  for both tabular classification and regression, as well as image
+  classification.
+- **Custom architectures** can be defined using the `Graph` language
+  from `mlr3pipelines` and turned into a learner. Alternatively, you can
+  also simply define your custom architecture as a `torch::nn_module`.
+- **Beyond regression and classification**: The package makes it easy to
+  go beyond classification and regression to tackle other learning
+  problems; see the [Custom Learning
+  Problems](https://mlr3torch.mlr-org.com/dev/articles/custom_task_type.html)
+  article. Third-party packages can also add new task types that reuse
+  the infrastructure of both {mlr3torch} and {mlr3}, see the [Adding a
+  New Task
+  Type](https://mlr3torch.mlr-org.com/dev/articles/new_task_type.html)
+  article.
+- **Extensibility**: All building blocks, i.e., layers, losses,
+  optimizers, callbacks, and learners, can be extended with custom
+  implementations.
+- **Tensor Columns**: The package makes it possible to store arbitrary
+  tensors alongside tabular features via the `lazy_tensor` data type.
+  This means that, in principle, the package can support arbitrary
+  modalities of data, including multi-modal datasets.
+- **Customizable training**: The training loop can be customized via
+  (predefined or custom) callbacks for logging, learning rate
+  scheduling, or other purposes.
+- **Checkpointing**: Training runs can be checkpointed and resumed,
+  including the state of all callbacks.
+- **Full `mlr3` integration**: Resampling, benchmarking, and
+  parallelization work as for any other `mlr3` learner. Neural network
+  architectures, as well as their hyperparameters, can be easily tuned
+  via `mlr3tuning` and friends.
 
 ## Documentation
 
 - Start by reading one of the vignettes on the package website!
-- There is a [course on
-  `(mlr3)torch`](https://mlr-org.github.io/mlr3torch-course/).
-- You can check out our [presentation from UseR
-  2024](https://sebffischer.github.io/mlr3torch-UseR-2024/#/).
+- The paper [*mlr3torch: A Deep Learning Framework in R based on mlr3
+  and torch*](https://arxiv.org/abs/2604.18152) gives an overview of the
+  package.
 
-## Contributing:
+## Contributing
 
 - To run the tests one needs to set the environment variable
   `TEST_TORCH = 1`, e.g. by adding it to `.Renviron`.
@@ -246,6 +262,17 @@ deep_learner$train(mnist)
 - This R package is developed as part of the [Mathematical Research Data
   Initiative](https://www.mardi4nfdi.de/about/mission).
 
+## Citation
+
+If you use `mlr3torch` in a scientific publication, please cite it as:
+
+    @article{fischer2026mlr3torch,
+      title={mlr3torch: A Deep Learning Framework in R based on mlr3 and torch},
+      author={Fischer, Sebastian and Burk, Lukas and Zhang, Carson and Bischl, Bernd and Binder, Martin},
+      journal={arXiv preprint arXiv:2604.18152},
+      year={2026}
+    }
+
 ## Bugs, Questions, Feedback
 
 *mlr3torch* is a free and open source software project that encourages
@@ -258,6 +285,6 @@ In case of problems / bugs, it is often helpful if you provide a
 about this if the bug is obvious).
 
 Please understand that the resources of the project are limited:
-response may sometimes be delayed by a few days, and some feature
+responses may sometimes be delayed by a few days, and some feature
 suggestions may be rejected if they are deemed too tangential to the
 vision behind the project.

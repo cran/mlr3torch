@@ -32,15 +32,6 @@ expect_man_exists = function(man) {
 }
 
 
-expect_shallow_clone = function(one, two) {
-  expect_equal(one, two)
-  if (base::is.environment(one)) {
-    addr_a = data.table::address(one)
-    addr_b = data.table::address(two)
-    expect_true(addr_a != addr_b, label = "Objects are shallow clones")
-  }
-}
-
 # check basic properties of a pipeop object
 # - properties / methods as we need them
 expect_pipeop = function(po, check_ps_default_values = TRUE) {
@@ -80,7 +71,7 @@ expect_valid_pipeop_param_set = function(po, check_ps_default_values = TRUE) {
       psn$check(structure(list(test_value), names = uty))
     })
     expect_true(all(map_lgl(results, function(result) {
-      length(result) == 1L && (is.character(result) || result == TRUE)  # result == TRUE is necessary because default is function(x) TRUE
+      length(result) == 1L && (is.character(result) || result)  # result == TRUE is necessary because default is function(x) TRUE
     })), label = "custom_check returns string on failure")
   }
 
@@ -130,34 +121,6 @@ expect_pipeop_class = function(poclass, constargs = list(), check_ps_default_val
 
 }
 
-expect_graph = function(g, n_nodes = NULL, n_edges = NULL) {
-
-  expect_class(g, "Graph")
-  expect_list(g$pipeops, "PipeOp")
-  if (!is.null(n_nodes)) {
-    expect_length(g$pipeops, n_nodes)
-  }
-  expect_character(g$packages, any.missing = FALSE, unique = TRUE)
-
-  expect_data_table(g$edges, any.missing = FALSE)
-  if (!is.null(n_edges)) {
-    expect_equal(nrow(g$edges), n_edges)
-  }
-
-  expect_character(g$hash)
-
-  expect_class(g$param_set, "ParamSet")
-  expect_list(g$param_set$values, names = "unique")
-
-  expect_character(g$lhs, any.missing = FALSE)
-  expect_character(g$rhs, any.missing = FALSE)
-
-  expect_set_equal(g$ids(), names(g$pipeops))
-  expect_set_equal(g$ids(sorted = TRUE), names(g$pipeops))
-
-  expect_flag(g$is_trained)
-}
-
 random_dataset = dataset("random_dataset",
   initialize = function(..., n = 10) {
     self$x = torch_randn(n, ...)
@@ -204,4 +167,13 @@ make_dataset = function(shapes, n = 5, getbatch = TRUE) {
       }
     )(shapes)
   }
+}
+
+# Expect an `Mlr3ErrorConfig` (see `mlr3misc::error_config()`).
+# The message of `Mlr3Error`s is line-wrapped by cli, so `pattern` is matched against the
+# unwrapped `raw_message`.
+expect_error_config = function(expr, pattern) {
+  err = expect_error(expr, class = "Mlr3ErrorConfig")
+  expect_match(err$raw_message, pattern)
+  invisible(err)
 }
